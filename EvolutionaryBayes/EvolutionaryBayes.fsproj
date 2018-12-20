@@ -5,7 +5,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Library.fs" />
+    <Compile Include="ProbMonad.fs" />
+    <Compile Include="Distributions.fs" />
+    <Compile Include="MetropolisHastings.fs" />
+    <Compile Include="Helpers.fs" />
+    <Compile Include="ParticleFilters.fs" />
+    <None Include="sampling.fsx" />
+    <Compile Include="SimulatedAnnealing.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MathNet.Numerics" Version="4.7.0" />
+    <PackageReference Include="Prelude" Version="1.0.8" />
   </ItemGroup>
 
 </Project>
