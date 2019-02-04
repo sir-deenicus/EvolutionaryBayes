@@ -23,4 +23,6 @@ type DistributionBuilder() =
 
 let dist = DistributionBuilder()
 
-let observe pdf l y = List.fold (fun s x -> s * pdf x y) 1. l
+let observe pdf l y = List.fold (fun s x -> s + log(pdf x y)) 0. l 
+ 
+let inline logdiv a b = exp(a - b)

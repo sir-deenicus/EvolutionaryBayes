@@ -1,28 +1,23 @@
-﻿#r @"bin\Debug\net45\Prelude.dll"
-#r @"..\Hansei.Rational\bin\Release\net45\MathNet.Numerics.dll"
+﻿#r @"C:\Users\cybernetic\Code\Libs\net4+\Prelude\Prelude.dll"
+#r @"bin\Debug\netcoreapp2.1\EvolutionaryBayes.dll"
+#r @"C:\Users\cybernetic\Code\Libs\MathNet\lib\net40\MathNet.Numerics.dll"
+#time
 
 open Prelude.Common
 open System
 open MathNet.Numerics.Distributions
+open EvolutionaryBayes.ProbMonad
+open EvolutionaryBayes.Distributions
+open Helpers
 
 let n = dist { return! normal 0. 1. } 
+let data = [for _ in 0..999 -> Normal(10., 1.).Sample()]
+ 
+let lik = observe (fun x y -> Normal(x, 10.).Density y) data //[ 5.; 10.; 4. ] 
 
-let lik = observe (fun x y -> Normal(x, 1.).Density y) [ 5.; 10.; 4. ]
-
-MHMC.MH lik (fun x -> 
+EvolutionaryBayes.MetropolisHastings.sample lik (fun x -> 
     if (bernoulli 0.5).Sample() then x + 0.1
-    else x - 0.1) n 1000
+    else x - 0.1) n 100000
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd
 
-let z =
-    SimpleMCMC.MH lik n 10000
-    |> Sampling.roundAndGroupSamplesWith (round 1)
-    |> Array.sortByDescending snd
-
-Sampling.computeSamplesMCMC 10000 1000 lik n
-|> Array.sortByDescending snd
-|> Sampling.compactMapSamples (round 1)
-[ for i in 0..999 -> n.Sample() |> round 1 ]
-|> Seq.countBy id
-|> Seq.toArray

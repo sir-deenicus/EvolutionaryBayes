@@ -20,6 +20,12 @@ let categorical (items:_[]) (pmf:float[]) =
     { new Distribution<_> with
           member d.Sample() = items.[c.Sample()]  }
 
+let categorical2 (itemps:_[]) = 
+    let items, pmf = Array.unzip itemps
+    let c = Categorical(pmf)
+    { new Distribution<_> with
+          member d.Sample() = items.[c.Sample()]  }
+
 let discreteUniform (lower,upper)  = 
     let du = DiscreteUniform(lower,upper)
     { new Distribution<_> with

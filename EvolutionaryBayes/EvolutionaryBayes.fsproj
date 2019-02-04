@@ -5,13 +5,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="hmc-test.fsx" />
     <Compile Include="ProbMonad.fs" />
     <Compile Include="Distributions.fs" />
     <Compile Include="MetropolisHastings.fs" />
     <Compile Include="Helpers.fs" />
     <Compile Include="ParticleFilters.fs" />
-    <None Include="sampling.fsx" />
     <Compile Include="SimulatedAnnealing.fs" />
+    <None Include="sampling.fsx" />
   </ItemGroup>
 
   <ItemGroup>

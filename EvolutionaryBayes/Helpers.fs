@@ -5,7 +5,7 @@ open System
 open EvolutionaryBayes
 open EvolutionaryBayes.ProbMonad
     
-type Distribution<'T>  with    
+type Distribution<'T> with    
     member d.SampleN n =  [|for _ in 1..n -> d.Sample()|]  
 
 module Sampling =
