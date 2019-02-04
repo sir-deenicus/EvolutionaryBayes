@@ -44,8 +44,10 @@ let sample hdelta hsteps n (f: DV -> D) (prior:Distribution<_>) =
         else
         let x' = hmc hdelta hsteps f x
         loop (c-1) (x'::s) x'
-    let init = prior.Sample()
-    loop n [] init
+    let parts = n / 10
+    [|for i in 0..parts do
+        let init = prior.Sample() 
+        yield! loop 10 [] init|]
     
 
 let observe pdf l y = List.fold (fun s x -> s * pdf x y) (D 1.f) l
@@ -86,4 +88,4 @@ module Densities =
 
 let n = dist { return! EvolutionaryBayes.Distributions.bernoulli 0. } 
 
-let lik = observe (fun x y -> Densities.normal x (D 1.f) y) [ D 5.f; D 10.f; D 4.f ]
+let lik = observe (fun x y -> Densities.normal (D x) (D 1.f) y) [ 5.f; 10.f; 4.f ]

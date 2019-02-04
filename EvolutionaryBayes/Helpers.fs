@@ -9,7 +9,6 @@ type Distribution<'T>  with
     member d.SampleN n =  [|for _ in 1..n -> d.Sample()|]  
 
 module Sampling =
-
     let roundAndGroupSamplesWith f samples =
         samples
         |> Seq.toArray
