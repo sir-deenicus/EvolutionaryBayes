@@ -5,7 +5,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="hmc-test.fsx" />
     <Compile Include="ProbMonad.fs" />
     <Compile Include="Distributions.fs" />
     <Compile Include="MetropolisHastings.fs" />

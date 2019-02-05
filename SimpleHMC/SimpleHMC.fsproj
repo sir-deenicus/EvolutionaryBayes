@@ -26,6 +26,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="hmc-test.fsx" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="DiffSharp" Version="1.0.0" />
   </ItemGroup>
 
