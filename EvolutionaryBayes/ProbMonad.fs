@@ -23,9 +23,7 @@ type DistributionBuilder() =
 
 let dist = DistributionBuilder()
 
-let observe pdf l y = 
-    List.fold (fun s x -> 
-        let d = max System.Double.Epsilon (pdf x y)
-        s + log d) 0. l   
+let observe pdf observations parameters = 
+    List.sumBy (fun x -> log (max System.Double.Epsilon (pdf parameters x))) observations   
  
 let inline logdiv a b = exp(a - b)

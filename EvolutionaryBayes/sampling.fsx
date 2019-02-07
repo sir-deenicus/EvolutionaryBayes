@@ -9,17 +9,19 @@ open MathNet.Numerics.Distributions
 open EvolutionaryBayes.ProbMonad
 open EvolutionaryBayes.Distributions
 open Helpers
+open Prelude.Math
+open EvolutionaryBayes
 
 let n = dist { return! normal 0. 1. } 
 let data = [for _ in 0..999 -> Normal(10., 10.).Sample()]
  
-let lik = observe (fun x y -> Normal(x, 1.).Density y) data //[ 5.; 10.; 4. ]// 
+let lik = observe (fun parameters x -> Normal(parameters, 1.).Density x) data // [ 5.; 10.; 4. ]// 
 
 EvolutionaryBayes.MetropolisHastings.sample lik (fun x -> 
     if (bernoulli 0.5).Sample() then x + 0.1
-    else x - 0.1) (normal 0. 1.) 100000
+    else x - 0.1) (normal 0. 1.) 100_000
 |> Sampling.roundAndGroupSamplesWith (round 1)
-|> Array.sortByDescending snd 
+|> Array.sortByDescending snd  
 
 let game2 a b c d =
     dist {
@@ -39,3 +41,37 @@ let game2 a b c d =
 (game2 6. 10. 2. 10.).SampleN(1_000_000)
 |> Sampling.roundAndGroupSamplesWith id
 |> Array.sortByDescending snd 
+
+
+let points =
+    [ (218.4, 11.95833333)
+      (222.8, 15.125)
+      (222.8, 14.78194444)
+      (218.4, 11.34305556)
+      (222.8, 16.40277778)
+      (222.8, 11.70138889)
+      (222.8, 15.3125)
+      (436.8, 23.52083333)
+      (436.8, 21.72083333)
+      (218.4, 12.3625) ]
+
+let prior =
+    dist { let! m = normal 10. 10.
+           let! b = normal 0. 10.
+           return (m, b) }
+
+prior.Sample()  
+
+let lik2 = observe (fun (m, b) (x, y) -> Normal(m * x + b, 1.).Density y) points // [ 5.; 10.; 4. ]//
+
+let rs =
+    MetropolisHastings.sample lik2 (fun (m, b) ->
+        let ps = [| m; b |]
+        let i = random.Next(0, ps.Length)
+        ps.[i] <- ps.[i] + random.NextDouble(-0.1, 0.1)
+        ps.[0], ps.[1]) prior 100_000
+
+rs
+|> Sampling.roundAndGroupSamplesWith (fun (m, b) -> round 1 (m * 218.4 + b))
+|> Array.sortByDescending snd
+

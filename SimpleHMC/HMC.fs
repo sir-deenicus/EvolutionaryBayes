@@ -3,19 +3,10 @@
 //Hamiltonian monte carlo, hacky start
 open DiffSharp.AD.Float32
 open EvolutionaryBayes.ProbMonad
+open MathNet.Numerics
 
 //contains code from http://diffsharp.github.io/DiffSharp/examples-hamiltonianmontecarlo.html
-let normal = MathNet.Numerics.Distributions.Normal(0., 1.)
-let Rnd = new System.Random()
-// Uniform random number ~U(0, 1)
-let rnd() = Rnd.NextDouble() |> float32
-
-
-// Standard normal random number ~N(0, 1), via Box-Muller transform
-let rec rndn() =
-    let x, y = rnd() * 2.0f - 1.0f, rnd() * 2.0f - 1.0f
-    let s = x * x + y *y
-    if s > 1.0f then rndn() else x * sqrt (-2.0f * (log s) / s)
+let Rnd = new System.Random() 
 
 /// Leapfrog integrator
 /// u: potential energy function
@@ -40,11 +31,15 @@ let sample hdelta hsteps n (f : DV -> D) (prior : Distribution<_>) =
     let u x = -(f x) // potential energy
     let k p = (p * p) / D 2.f // kinetic energy
     let hamiltonian x p = u x + k p
+    let normal = Distributions.Normal(0., 1.)
+    // Uniform random number ~U(0, 1)
+    let rnd() = Rnd.NextDouble() |> float32 
     let hmc (x0:DV) =
-        let p = DV.init x0.Length (fun _ -> rndn())
+        let p = DV.init x0.Length (fun _ -> normal.Sample() |> float32 |> D)
         let x', p' = leapFrog u k (D hdelta) hsteps (x0, p)
-        if rnd() < float32 (exp ((hamiltonian x0 p) - (hamiltonian x' p'))) then x'
-        else x0 
+        let acceptprob = float32 (exp ((hamiltonian x0 p) - (hamiltonian x' p'))) 
+        if rnd() <= min 1.f acceptprob then x'
+        else x0  
     let rec loop c s (x : DV) =
         if c = 0 then s
         else
@@ -53,7 +48,10 @@ let sample hdelta hsteps n (f : DV -> D) (prior : Distribution<_>) =
     let init = prior.Sample()
     loop n [] init 
 
-let observe log_pdf l y = List.fold (fun s x -> s + log_pdf x y) (D 0.f) l
+//let observe log_pdf observations parameters = List.fold (fun s x -> s + log_pdf parameters x) (D 0.f) observations
+
+let observe (log_pdf : DV -> 'b -> D) (observations : 'b list)
+    (parameters : DV) = List.sumBy (log_pdf parameters) observations
 
 module Densities =
     let rec factorial acc (x : D) =
@@ -66,27 +64,24 @@ module Densities =
     /// x: variable vector
     let multiNormal (mu : DV) (sigmaInverse : DM) (x : DV) =
         let xm = x - mu
-        (-(xm * sigmaInverse * xm) / D 2.f)
+        (-(xm * sigmaInverse * xm) / D 2.f) 
 
-    let normal (mu : D) (sigma : D) (xv : DV) = 
-        (-(xv.[0] - mu) ** 2.f / (D 2.f * sigma ** 2.f))
+    let lognormal (mu : DV) (sigmaInverse : DM) (x : DV) = multiNormal mu sigmaInverse (log x)
 
-    let lognormal (mu : D) (sigma : D) (xv : DV) = normal mu sigma (log xv)
+    let gamma (shape) (rate:DV) (x : DV) = 
+        log ((DV.sum x) ** (shape - 1.f) * exp (-rate * x))
 
-    let gamma (shape) (rate) (xv : DV) =
-        let x = xv.[0]
-        log (x ** (shape - 1.f) * exp (-rate * x))
+    let poisson lambda (k : DV) = 
+        let k' = DV.sum k
+        log (lambda ** k' / (factorial (D 1.f) k'))
 
-    let poisson lambda (kvec : DV) =
-        let k = kvec.[0]
-        log (lambda ** k / (factorial (D 1.f) k))
+    let exponential (λ:DV) (x : DV) = (-λ * x)
 
-    let exponential λ (x : DV) = (-λ * x.[0])
-
-    let studentT loc scale deg (xv : DV) =
-        let x = xv.[0]
+    let studentT loc scale degr (x : DV) =
+        let x' = DV.sum x
+        let deg = D degr
         log
-            ((D 1.f + D 1.f / deg * ((x - loc) / scale) ** 2.f)
+            ((D 1.f + D 1.f / deg * ((x' - loc) / scale) ** 2.f)
              ** -((deg + 1.f) / 2.f))
 
 module Samplers =
