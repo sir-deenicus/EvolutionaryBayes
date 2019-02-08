@@ -40,20 +40,19 @@ let sample hdelta hsteps n (f : DV -> D) (prior : Distribution<_>) =
         let acceptprob = float32 (exp ((hamiltonian x0 p) - (hamiltonian x' p'))) 
         if rnd() <= min 1.f acceptprob then x'
         else x0  
-    let rec loop c s (x : DV) =
-        if c = 0 then s
+    let rec loop steps samples (x : DV) =
+        if steps = 0 then samples
         else
             let x' = hmc x
-            loop (c - 1) (x' :: s) x' 
+            loop (steps - 1) (x' :: samples) x' 
     let init = prior.Sample()
     loop n [] init 
-
-//let observe log_pdf observations parameters = List.fold (fun s x -> s + log_pdf parameters x) (D 0.f) observations
 
 let observe (log_pdf : DV -> 'b -> D) (observations : 'b list)
     (parameters : DV) = List.sumBy (log_pdf parameters) observations
 
-module Densities =
+///some densities may contain errors.
+module LogDensities =
     let rec factorial acc (x : D) =
         if x = D 1.f then x
         else factorial (acc * x) (x - 1.f)
@@ -95,3 +94,16 @@ module Samplers =
                      |> float32
                      |> D |]
                   |> DV.ofArray }
+
+module DM =
+    let fillOffDiagonals (m : DM) (v : DV) =
+        let cols, rows = m.Cols, m.Rows
+        let mutable i = 0
+        toDV [| for c in 0..cols - 1 do
+                    for r in 0..rows - 1 ->
+                        if c <> r then
+                            let x = v.[i]
+                            i <- i + 1
+                            x
+                        else m.[r, c] |]
+        |> DV.toDM rows
