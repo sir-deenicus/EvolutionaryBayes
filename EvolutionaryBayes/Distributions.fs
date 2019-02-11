@@ -95,3 +95,8 @@ let poisson lambda =
     let p = Poisson(lambda)
     { new Distribution<int> with
           member d.Sample() = p.Sample() }
+
+let cauchy loc scale =
+    let c = Cauchy(loc , scale)
+    { new Distribution<float> with
+          member d.Sample() = c.Sample() }

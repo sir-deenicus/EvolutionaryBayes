@@ -4,14 +4,14 @@ open EvolutionaryBayes.ProbMonad
 open EvolutionaryBayes.Distributions
 
 module MetropolisHastings =
-    let internal iterate n perturb (lik : 'a -> float) (proposal : Distribution<_>) (initial: float * 'a) =
+    let internal iterate transitionp n perturb (lik : 'a -> float) (proposal : Distribution<_>) (initial: float * 'a) =
         let rec loop newChain (p, chainState) n =
             if n = 0 then newChain
             else 
                 let nextDist =
                     dist { 
-                        let! meth = bernoulli 0.5
-                        if meth then 
+                        let! meth = bernoulli transitionp
+                        if not meth then 
                             let! candidate = proposal
                             let p' = lik candidate 
                             let! accept = bernoulli (min 1. (logdiv p' p))
@@ -27,6 +27,6 @@ module MetropolisHastings =
                 loop (snd next :: newChain) next (n - 1)
         if (n <= 0) then ([snd initial])
         else loop [snd initial] initial n    
-    let sample likelihood perturb (prior : Distribution<_>) (n:int) =
+    let sample transitionp likelihood perturb (prior : Distribution<_>) (n:int) =
         let x = prior.Sample()
-        iterate n perturb likelihood prior (likelihood x, x) 
+        iterate transitionp n perturb likelihood prior (likelihood x, x) 

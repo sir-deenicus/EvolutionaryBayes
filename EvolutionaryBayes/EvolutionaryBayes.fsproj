@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="NotesOnPriors.fsx" />
     <Compile Include="ProbMonad.fs" />
     <Compile Include="Distributions.fs" />
     <Compile Include="MetropolisHastings.fs" />

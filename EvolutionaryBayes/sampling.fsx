@@ -11,16 +11,21 @@ open EvolutionaryBayes.Distributions
 open Helpers
 open Prelude.Math
 open EvolutionaryBayes
+ 
 
 let data = [for _ in 0..999 -> Normal(10., 10.).Sample()]
  
-let lik = observe (fun parameters x -> Normal(parameters, 1.).Density x) data // [ 5.; 10.; 4. ]// 
+let lik = observe (fun parameters x -> Normal(parameters, 1.).Density x) [ 10.; ]//data // [ 5.; 10.; 4. ]// 
 
-EvolutionaryBayes.MetropolisHastings.sample lik (fun x -> 
+EvolutionaryBayes.MetropolisHastings.sample 0.5 lik (fun x -> 
     if (bernoulli 0.5).Sample() then x + 0.1
     else x - 0.1) (normal 0. 1.) 100_000
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd  
+
+EvolutionaryBayes.MetropolisHastings.sample 0. lik id (normal 0. 1.) 100_000
+|> Sampling.roundAndGroupSamplesWith (round 1)
+|> Array.sortByDescending snd 
 
 let game2 a b c d =
     dist {
@@ -62,7 +67,7 @@ let prior =
 let lik2 = observe (fun (m, b) (x, y) -> Normal(m * x + b, 1.).Density y) points // [ 5.; 10.; 4. ]//
 
 let rs =
-    MetropolisHastings.sample lik2 (fun (m, b) ->
+    MetropolisHastings.sample 0.5 lik2 (fun (m, b) ->
         let ps = [| m; b |]
         let i = random.Next(0, ps.Length)
         ps.[i] <- ps.[i] + random.NextDouble(-0.1, 0.1)
