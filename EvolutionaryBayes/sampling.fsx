@@ -11,7 +11,6 @@ open EvolutionaryBayes.Distributions
 open Helpers
 open Prelude.Math
 open EvolutionaryBayes
- 
 
 let data = [for _ in 0..999 -> Normal(10., 10.).Sample()]
  

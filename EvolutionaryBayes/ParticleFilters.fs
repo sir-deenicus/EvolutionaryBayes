@@ -1,4 +1,4 @@
-﻿module ParticleFilters
+﻿module EvolutionaryBayes.ParticleFilters
 
 open EvolutionaryBayes.ProbMonad
 open System
@@ -6,22 +6,32 @@ open Prelude.Common
 open Prelude.Math
 open Helpers
 open EvolutionaryBayes
+open System.Collections.Generic
+
+let dictToArray d = [|for (x:KeyValuePair<_,_>) in d -> x.Key, float x.Value|]
+
+let countElements (xs:_[]) =
+    let countdict = Dict()
+    for x in xs do
+        let b, v = countdict.TryGetValue x
+        if b then countdict.[x] <- v + 1
+        else countdict.[x] <- 1
+    dictToArray countdict  
 
 let reweightWith likelihood samples =
-    Array.countElements samples
-    |> Map.toArray
+    countElements samples 
     |> Array.normalizeWeights
     |> Array.map (fun (x, p) -> x, p * likelihood x)
 
 
 let weightWith likelihood samples =
-    samples |> Array.map (fun x -> x, likelihood x)
+    samples |> Array.map (fun x -> x, likelihood x) |> Array.normalizeWeights
 
 let importanceSamples (likelihood : 'a -> float) (n : int)
     (prior : Distribution<_>) = prior.SampleN n |> reweightWith likelihood
 
 let sequenceSamples mutateprob mutate (likelihood : 'a -> float) (numparticles : int)
-    (numsamples : int) (prior : Distribution<_>) =
+    (numsteps : int) (prior : Distribution<_>) =
     let choices = importanceSamples likelihood numparticles prior
     let dist' = Distributions.categorical2 choices
 
@@ -35,7 +45,7 @@ let sequenceSamples mutateprob mutate (likelihood : 'a -> float) (numparticles :
             |> weightWith likelihood                     |> Distributions.categorical2
             |> importanceSamples likelihood numparticles |> Distributions.categorical2
             |> loop (samples - 1)
-    loop numsamples dist'
+    loop numsteps dist'
 
 ///Inspired by evolution (see papers on regret minimization's connection to evolution), this
 ///method maintains a memory where each element is a set of samples weighted by their average
