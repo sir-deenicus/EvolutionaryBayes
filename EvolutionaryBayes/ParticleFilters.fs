@@ -22,7 +22,7 @@ let reweightWith likelihood samples =
     countElements samples 
     |> Array.normalizeWeights
     |> Array.map (fun (x, p) -> x, p * likelihood x)
-
+    |> Array.normalizeWeights
 
 let weightWith likelihood samples =
     samples |> Array.map (fun x -> x, likelihood x) |> Array.normalizeWeights
@@ -57,14 +57,14 @@ let sequenceSamples mutateprob mutate (likelihood : 'a -> float) (numparticles :
 let evolveSequence mutateprob maxsize mem mutate (likelihood : 'a -> float)
     (samplesPerGen : int) (numSteps : int) (prior : Distribution<_>) =
     let choices = importanceSamples likelihood samplesPerGen prior
-    let dist' = Distributions.categorical2 choices, Array.averageBy snd choices
+    let dist' = Distributions.categorical2 choices, Array.averageBy (fst >> likelihood) choices
 
     let rec loop steps mem =
         if steps = 0 then mem
         else
             let population =
                 dist { let! history = Distributions.categorical2
-                                          (List.toArray mem) //sample a generation
+                                          (Array.normalizeWeights (List.toArray mem))//sample a generation
                        let! hypothesis = history //sample a hypothesis from selected generation
                        return hypothesis }
 
@@ -78,7 +78,7 @@ let evolveSequence mutateprob maxsize mem mutate (likelihood : 'a -> float)
                 |> Distributions.categorical2
                 |> importanceSamples likelihood samplesPerGen
 
-            let w = Array.averageBy snd samples 
+            let w = Array.averageBy (fst >> likelihood) samples 
 
             let memory =
                 let history = (Distributions.categorical2 samples, w) :: mem
