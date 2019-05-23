@@ -27,3 +27,5 @@ let observe pdf observations parameters =
     List.sumBy (fun x -> log (max System.Double.Epsilon (pdf parameters x))) observations   
  
 let inline logdiv a b = exp(a - b)
+
+let inline logdivT T a b = exp((a - b) / T)

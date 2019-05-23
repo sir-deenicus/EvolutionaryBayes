@@ -6,6 +6,10 @@ open Prelude.Math
 open System
 open MathNet.Numerics.LinearAlgebra.Double
 
+let always x =
+    { new Distribution<'T> with
+          member d.Sample() = x }
+
 let normal m s =
     let n = Normal(m, s)
     { new Distribution<float> with
