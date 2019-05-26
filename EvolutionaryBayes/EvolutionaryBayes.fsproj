@@ -5,6 +5,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="minregret.fsx" />
+    <Compile Include="RegretMinimization.fs" />
     <None Include="NotesOnPriors.fsx" />
     <Compile Include="ProbMonad.fs" />
     <Compile Include="Distributions.fs" />
