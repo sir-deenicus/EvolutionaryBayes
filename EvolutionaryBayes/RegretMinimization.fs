@@ -50,15 +50,21 @@ let learningStep minr maxr rate actions reward e obsv =
     Array.addInPlaceIntoFirst e.SumRegrets w
     e.Total <- e.Total + 1.
 
-type Expert<'a, 'actions, 'obs when 'a : equality>(actions : 'actions [], reward, dim, ?learningrate, ?minreward, ?maxreward, ?prevweights, ?learner) =
+type Expert<'a, 'actions, 'obs when 'a : equality>(reward, ?agentActions : 'actions [], ?learningrate, ?minreward, ?maxreward, ?prevweights, ?learner) =
     let experts = defaultArg prevweights (Dict<'a, _>())
     let lr = defaultArg learningrate 0.1
     let minr = defaultArg minreward -1.
     let maxr = defaultArg maxreward 1.
     let learn = defaultArg learner (learningStep minr maxr lr)
-    member __.Get k = maybe { return! experts.tryFind k }
+    let mutable actions = defaultArg agentActions [||]
+    let mutable dim = actions.Length
+
+    member __.Get k = experts.tryFind k 
     member __.GetOrAdd k = getExpert experts dim k
-    member __.New k = experts.Add(k, newExpert dim)
+    member __.New k = if not (experts.ContainsKey k) then experts.Add(k, newExpert dim)
+    member __.SetActions a = 
+        actions <- a
+        dim <- a.Length
     member __.First() = (Seq.head experts).Value
     member __.TryFirst() =
         Seq.tryHead experts |> Option.map (fun kv -> kv.Value)
@@ -69,6 +75,7 @@ type Expert<'a, 'actions, 'obs when 'a : equality>(actions : 'actions [], reward
     member __.SampleActionAt k = actions.[experts.[k].Sample()]
     member __.Actions = actions
     member __.WeightedActions k = experts.[k].WeightedActions actions
+    member  t.WeightedActions() = t.First().WeightedActions actions
     member __.Experts = experts
     member __.Forget() =
         for k in (Seq.toArray experts.Keys) do
