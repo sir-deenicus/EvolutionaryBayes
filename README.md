@@ -54,11 +54,15 @@ EvoBayes supports F# computation expressions, and while you can do simple sample
 
 ## Metropolis Hastings
 
-EvoBayes is focused on the likelihood and the concept of perturbations. It supports a perturbation or transition operator that behaves much as what one would find in simulated annealing. In its Metropolis Hastings implementation, these transitions do have the property of not being bayesian with regards to a prior (it is not regularizing, smoothing or drawing samples to itself). To correct this, the drawn samples offer their joint probability. As well, the joint probability for the transition parameters can be provided for each transition. These can be written easily as a list of density functions that are summed over (more in HMC section). But even with just a handful of observations, the priors will not be as important so EvoBayes does not prioritize the prior.
+EvoBayes is focused on the likelihood and the concept of perturbations. It supports a perturbation or transition operator that behaves much as what one would find in simulated annealing. In its Metropolis Hastings implementation, it is neccessary to provide a prior to go with the transition operators and likelihood computations.
+
+Ultimately, constructing a prior that can also compute likelihoods with computation expressions is probably not the best way to go (given the intended use cases), also likely requiring the use of symbols and adjusting the distributions to accept them. But that's not all since getting something that can be sampled from and computes likelihoods seems very tricky--there seems no obvious way to apply the needed arbitrary projection to the intermediate tensor products.
+
+It is much easier instead to implement a way for base distributions to compute likelihoods and then manually compute the prior and the sum for the likelihood. With included helpers it should not take much more work than doing so with the aid of a computation expression.
 
 ## Particle Filter
 
-In addition to the MCMC/simulated annealing hybrid, the Particle Filter section is inspired by genetic algorithms, actual evolution and particle filters. The issue of priors is here not as large and the generator based priors do act more typically bayesian.
+In addition to the MCMC/simulated annealing hybrid, the Particle Filter section is inspired by genetic algorithms, actual evolution and particle filters. The issue of priors is here not large and the generator based priors do act more typically bayesian.
 
 *Quoting a code comment:*
 
@@ -88,7 +92,7 @@ If EvoBayes is a lax, many things go as long as they works empirically wild west
 
 **Priors** 
 
-HMC requires priors. To support this, you can write your prior in a list as below and density sums these and adds them to the log likelihood. *Code below is illustrative:*
+HMC requires priors. To support this, you can write your prior as a sum, as shown below while the density functions adds it to the log likelihood. *Code below is illustrative:*
 ```F#
     let lik =
         observe toDV (fun (param : DV) y ->
@@ -107,10 +111,9 @@ HMC requires priors. To support this, you can write your prior in a list as belo
                                                            [ 10.f; 12.f ]
                                                            [ 3.f; 9.f ] ]  
     let fprior (param:DV) =
-        [
-            LogDensities.normal (DV.ofNum 0.f) (D 1.f) (DV.ofNum param.[0])
-            LogDensities.normal (DV.ofNum param.[0]) (D 1.f) param.[1]
-        ]
+        LogDensities.normal (DV.ofNum 0.f) (D 1.f) (DV.ofNum param.[0])
+        + LogDensities.normal (DV.ofNum param.[0]) (D 1.f) param.[1]
+        
     let f = density lik fprior
     let p0 = sample 0.1f 10 5000 f (Samplers.sampleScalar (normal 0. 1.))
 ```
