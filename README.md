@@ -56,7 +56,7 @@ EvoBayes supports F# computation expressions, and while you can do simple sample
 
 EvoBayes is focused on the likelihood and the concept of perturbations. It supports a perturbation or transition operator that behaves much as what one would find in simulated annealing. In its Metropolis Hastings implementation, it is neccessary to provide a prior to go with the transition operators and likelihood computations.
 
-Ultimately, constructing a prior that can also compute likelihoods with computation expressions is probably not the best way to go (given the intended use cases), also likely requiring the use of symbols and adjusting the distributions to accept them. But that's not all since getting something that can be sampled from and computes likelihoods seems very tricky--there seems no obvious way to apply the needed arbitrary projection to the intermediate tensor products.
+Ultimately, constructing a prior that can also compute likelihoods with computation expressions is probably not the best way to go (given the intended use cases), also likely requiring the use of symbols and a lot of effort adjusting the distributions to accept them. But that's not all since getting something that can be both sampled from and computes likelihoods seems very tricky--there seems no obvious way to apply the needed arbitrary projection to the intermediate tensor products.
 
 It is much easier instead to implement a way for base distributions to compute likelihoods and then manually compute the prior and the sum for the likelihood. With included helpers it should not take much more work than doing so with the aid of a computation expression.
 
