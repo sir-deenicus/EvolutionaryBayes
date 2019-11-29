@@ -7,6 +7,10 @@ open EvolutionaryBayes.ProbMonad
     
 type Distribution<'T> with    
     member d.SampleN n =  [|for _ in 1..n -> d.Sample()|]  
+    member d.Likelihood x = exp(d.LogLikelihood x)
+
+module Ops =    
+    let (!) (d:Distribution<_>) = d.Sample() |> fst
 
 module Sampling =
     let roundAndGroupSamplesWith f samples =
@@ -108,12 +112,12 @@ module SampleSummarize =
                 let cmin', cmax', bulkMass' =
                     match toggle with
                     | true ->
-                        cmin, cmax + 1, (
-                            if cmax > items.Length - 1 then bulkMass
-                            else items.[cmax] :: bulkMass)
+                        cmin, cmax + 1, 
+                            (if cmax > items.Length - 1 then bulkMass
+                             else items.[cmax] :: bulkMass)
                     | false ->
-                        cmin - 1, cmax, (
-                            if cmin >= 0 then items.[cmin] :: bulkMass
+                        cmin - 1, cmax, 
+                           (if cmin >= 0 then items.[cmin] :: bulkMass
                             else bulkMass)
 
                 let currentSum = List.sumBy snd bulkMass'

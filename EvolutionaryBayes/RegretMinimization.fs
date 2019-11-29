@@ -42,7 +42,7 @@ let editOrAdd (experts : IDict<_, _>) k e =
     | true -> experts.[k] <- e
     | false -> experts.Add(k, e)
 
-let learningStep minr maxr rate actions reward e obsv =
+let learningStep minr maxr rate actions reward (e, obsv) =
     let w = e.Weights
     let rs = actions |> Array.map (fun a -> reward (a, obsv))
     Array.Copy
@@ -61,21 +61,25 @@ type Expert<'a, 'actions, 'obs when 'a : equality>(reward, ?agentActions : 'acti
 
     member __.Get k = experts.tryFind k 
     member __.GetOrAdd k = getExpert experts dim k
-    member __.New k = if not (experts.ContainsKey k) then experts.Add(k, newExpert dim)
+    member __.New k = 
+        if not (experts.ContainsKey k) then 
+            experts.Add(k, newExpert dim)
     member __.SetActions a = 
         actions <- a
-        dim <- a.Length
-    member __.First() = (Seq.head experts).Value
+        dim <- a.Length 
     member __.TryFirst() =
-        Seq.tryHead experts |> Option.map (fun kv -> kv.Value)
+        Seq.tryHead experts 
+        |> Option.map (fun kv -> kv.Value)
     member __.EditOrAddExpert newexpert k = editOrAdd experts k newexpert
     member __.Learn k (observation : 'obs) =
-        learn actions reward (experts.[k]) observation
+        learn actions reward ((experts.[k]), observation)
     member __.Item k = experts.[k]
     member __.SampleActionAt k = actions.[experts.[k].Sample()]
     member __.Actions = actions
     member __.WeightedActions k = experts.[k].WeightedActions actions
-    member  t.WeightedActions() = t.First().WeightedActions actions
+    member  t.WeightedActionsZero() = 
+        t.TryFirst() 
+        |> Option.map (fun e -> e.WeightedActions actions)
     member __.Experts = experts
     member __.Forget() =
         for k in (Seq.toArray experts.Keys) do

@@ -68,7 +68,7 @@ let sample samplelen warmup k hdelta hsteps numsamples (f : DV -> D)
 let observe (map : 'b -> DV) (log_pdf : DV -> DV -> D) (observations : 'b list)
     (parameters : DV) = List.sumBy (log_pdf parameters) (List.map map observations)
 
-let inline density likelihood prior param = List.sum (prior param) + likelihood param 
+let inline density likelihood prior param = prior param + likelihood param 
 
 module DV =
     let inline ofNum x = DV.create 1 (D x) 

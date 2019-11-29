@@ -27,9 +27,28 @@ module MetropolisHastings =
                 let T' = if randomperturb then T else max 1. (T * attenuate)
                 loop T' (snd next :: newChain) next (n - 1)
         if (n <= 0) then ([snd initial])
+        else loop T0 [snd initial] initial n   
+        
+    let internal iterate2 attenuate T0 n perturb (lik : 'a -> float) (initial: float * 'a) =
+        let rec loop T newChain (p, chainState) n =
+            if n = 0 then newChain
+            else 
+                let state' = perturb chainState
+                let p' = lik state' 
+                let accept' = bernoulli (min 1. (logdivT T p' p))
+                let next = if accept'.Sample() then (p', state')
+                           else (p, chainState) 
+                let T' = max 1. (T * attenuate)
+                loop T' (snd next :: newChain) next (n - 1)
+        if (n <= 0) then ([snd initial])
         else loop T0 [snd initial] initial n    
+
     let sampleT attentuate T transitionp likelihood perturb (prior : Distribution<_>) (n:int) =
         let x = prior.Sample()
-        iterate attentuate T transitionp n perturb likelihood prior (likelihood x, x) 
+        iterate attentuate T transitionp n perturb likelihood prior (likelihood x, x)
+      
+    let sample2 attentuate T likelihood perturb (n:int) init = 
+        iterate2 attentuate T n perturb likelihood (likelihood init, init)
+
     let sample transitionp likelihood perturb (prior : Distribution<_>) (n:int) =
         sampleT 1. 1. transitionp likelihood perturb prior n
