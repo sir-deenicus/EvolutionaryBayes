@@ -11,7 +11,7 @@ let rewardD = function
    | (Stop, Go) -> 0.
    | (Stop, Stop) -> 0. 
 
-let experts = Expert<int,_,_>([|Go;Stop|], rewardD, 2, minreward = -100., maxreward = 100.)        
+let experts = Expert<int,_,_>( rewardD, [|Go;Stop|], minreward = -100., maxreward = 100.)        
 
 for i in 0..1 do experts.New i
  
@@ -25,6 +25,6 @@ for _ in 0..99999 do
     experts.Learn 1 c2
     
 experts.[0].WeightedActions experts.Actions 
-experts.WeightedActions 1 
+experts.WeightedActionsFor 1 
   
 

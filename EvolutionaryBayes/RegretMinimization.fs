@@ -76,7 +76,7 @@ type Expert<'a, 'actions, 'obs when 'a : equality>(reward, ?agentActions : 'acti
     member __.Item k = experts.[k]
     member __.SampleActionAt k = actions.[experts.[k].Sample()]
     member __.Actions = actions
-    member __.WeightedActions k = experts.[k].WeightedActions actions
+    member __.WeightedActionsFor k = experts.[k].WeightedActions actions
     member  t.WeightedActionsZero() = 
         t.TryFirst() 
         |> Option.map (fun e -> e.WeightedActions actions)

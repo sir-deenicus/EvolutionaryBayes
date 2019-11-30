@@ -24,8 +24,8 @@ let getDiscreteSample (pcdf : ('a * float) []) =
     let rec cummProb idx =
         if k > snd pcdf.[idx] then cummProb (idx - 1)
         else idx, pcdf.[idx] 
-    let i, (x,_) = cummProb pcdlen 
-    x
+    let _, (item,_) = cummProb pcdlen 
+    item
     
 let discreteSample p = cdf p |> getDiscreteSample
 
@@ -90,11 +90,12 @@ let evolveSequence T atten mutateprob maxsize mem mutate
                 distBuilder (fun () ->
                     let history =
                         discreteSample //sample a generation
-                            (Array.normalizeWeights [| for (m, p) in mem -> m, p ** (1. / T) |]) 
+                            (normalizeWeights [| for (m, p) in mem -> m, p ** (1. / T) |]) 
 
                     let hypothesis =
                         discreteSample //sample a hypothesis from selected generation
-                            (Array.map (fun (x, p) -> x, p ** (1. / T)) history) 
+                            (Array.map (fun (x, p) -> x, p ** (1. / T)) history
+                            |> normalizeWeights) 
                     hypothesis)
 
             let samples =
@@ -122,8 +123,7 @@ let evolveSequence T atten mutateprob maxsize mem mutate
 ///fittest members of this sample.
 let remember likelihood mutate maxsize mem (samples : _ []) =
     Distributions.categorical2 samples
-    |> evolveSequence 1. 1. 0.1 maxsize mem mutate likelihood samples.Length 3
-
+    |> evolveSequence 1. 1. 0.1 maxsize mem mutate likelihood samples.Length 3 
 
 let inline testPath (paths : Dict<_,_>) k =
     match paths.tryFind k with

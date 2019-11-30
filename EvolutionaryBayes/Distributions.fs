@@ -13,31 +13,31 @@ let normal m s =
     let n = Normal(m, s)
     { new Distribution<float> with
         member d.Sample() = n.Sample()
-        member __.LogLikelihood x = n.Density x}
+        member __.LogLikelihood x = n.DensityLn x}
 
 let lognormal m s =
     let n = LogNormal.WithMeanVariance(m, s ** 2.)
     { new Distribution<float> with
         member d.Sample() = n.Sample()
-        member __.LogLikelihood x = n.Density x}
+        member __.LogLikelihood x = n.DensityLn x}
 
 let beta a b =
     let b = Beta(a, b)
     { new Distribution<float> with
         member d.Sample() = b.Sample()
-        member __.LogLikelihood x = b.Density x}
+        member __.LogLikelihood x = b.DensityLn x}
 
 let gamma shape rate =
     let g = Gamma(shape, rate)
     { new Distribution<float> with
         member d.Sample() = g.Sample()
-        member __.LogLikelihood x = g.Density x}
+        member __.LogLikelihood x = g.DensityLn x}
 
 let bernoulli p =
     let b = Bernoulli(p)
     { new Distribution<_> with
         member d.Sample() = b.Sample() = 1
-        member d.LogLikelihood x = b.Probability (boolToInt x)}
+        member d.LogLikelihood x = b.ProbabilityLn (boolToInt x)}
 
 let bernoulliChoice choice1 choice2 p =
     let b = Bernoulli(p)
@@ -48,7 +48,7 @@ let bernoulliChoice choice1 choice2 p =
                     | v when v = choice1 -> 1 
                     | v when v = choice2 -> 0 
                     | _ -> failwith "unrecognized choice"
-            b.Probability c} 
+            b.ProbabilityLn c} 
 
 let categorical (items : _ []) (pmf : float []) =
     let c = Categorical(pmf)
