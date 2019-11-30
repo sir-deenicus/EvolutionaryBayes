@@ -54,21 +54,21 @@ let importanceSamples (likelihood : 'a -> float) (n : int)
 let importanceSamplesArray (likelihood : 'a -> float) (n : int)
     (samples) = discreteSampleN n samples |> reweightWith likelihood
 
-let sequenceSamples mutateprob mutate (likelihood : 'a -> float)
+let sequenceSamples T attenuate mutateprob mutate (likelihood : 'a -> float)
     (numparticles : int) (numsteps : int) (prior : Distribution<_>) =
     let choices = importanceSamples likelihood numparticles prior 
 
-    let rec loop samples dist =
+    let rec loop T samples dist =
         if samples = 0 then dist
         else
             discreteSampleN numparticles dist
             |> Array.map (fun x ->
                    if random.NextDouble() < mutateprob then mutate choices x
                    else x)
-            |> weightWith likelihood 
+            |> weightWithT T likelihood 
             |> importanceSamplesArray likelihood numparticles 
-            |> loop (samples - 1)
-    loop numsteps choices
+            |> loop (max 1. (T * attenuate)) (samples - 1)
+    loop T numsteps choices
 
 ///Inspired by evolution (see papers on regret minimization's connection to evolution), this
 ///method maintains a memory where each element is a set of samples weighted by their average
@@ -153,7 +153,7 @@ type SequenceSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate
         let mp = defaultArg mutateprob 0.4
         let samplespergen = defaultArg samplespergen 500
         let gens = defaultArg generations 50
-        sequenceSamples mp mutateOnPopulationPF scorer samplespergen gens generator
+        sequenceSamples T atten mp mutateOnPopulationPF scorer samplespergen gens generator
 
     member __.SampleChain n =
         MetropolisHastings.sample2 atten T scorer mutate n (generator.Sample())
