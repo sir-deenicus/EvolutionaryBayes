@@ -31,27 +31,20 @@ let discreteSample p = cdf p |> getDiscreteSample
 
 let discreteSampleN n items = [|for _ in 1..n -> discreteSample items|]
   
-let dictToArray d =
-    [| for (x : KeyValuePair<_, _>) in d -> x.Key, float x.Value |]
-
-let countElements (xs : _ []) =
-    let countdict = Dict()
-    for x in xs do
-        let b, v = countdict.TryGetValue x
-        if b then countdict.[x] <- v + 1
-        else countdict.[x] <- 1
-    dictToArray countdict
-
+let inline normalizeWeights data =
+    let sum = Array.sumBy snd data |> float
+    [|for (x,p) in data -> x, float p / sum|]
+ 
 let reweightWith likelihood samples =
-    countElements samples
-    |> Array.normalizeWeights
+    Array.countBy id samples
+    |> normalizeWeights
     |> Array.map (fun (x, p) -> x, p * likelihood x)
-    |> Array.normalizeWeights
+    |> normalizeWeights
 
 let weightWithT T likelihood samples =
     samples
     |> Array.map (fun x -> x, (likelihood x) ** (1./T))
-    |> Array.normalizeWeights
+    |> normalizeWeights
 
 let weightWith likelihood samples = weightWithT 1. likelihood samples
 
@@ -65,7 +58,7 @@ let sequenceSamples mutateprob mutate (likelihood : 'a -> float)
     (numparticles : int) (numsteps : int) (prior : Distribution<_>) =
     let choices = importanceSamples likelihood numparticles prior 
 
-    let rec loop samples (dist ) =
+    let rec loop samples dist =
         if samples = 0 then dist
         else
             discreteSampleN numparticles dist
@@ -94,7 +87,7 @@ let evolveSequence T atten mutateprob maxsize mem mutate
         if steps = 0 then mem
         else
             let population =  //tends to not explore as well so use Temperature
-                distBuilder2 (fun () ->
+                distBuilder (fun () ->
                     let history =
                         discreteSample //sample a generation
                             (Array.normalizeWeights [| for (m, p) in mem -> m, p ** (1. / T) |]) 
