@@ -24,12 +24,16 @@ let getDiscreteSample (pcdf : ('a * float) []) =
     let rec cummProb idx =
         if k > snd pcdf.[idx] then cummProb (idx - 1)
         else idx, pcdf.[idx] 
-    let _, (item,_) = cummProb pcdlen 
-    item
+    let i, (item,_) = cummProb pcdlen 
+    i, item
     
-let discreteSample p = cdf p |> getDiscreteSample
+let discreteSampleIndex p = cdf p |> getDiscreteSample
+
+let inline discreteSample p = discreteSampleIndex p |> snd
 
 let discreteSampleN n items = [|for _ in 1..n -> discreteSample items|]
+
+let discreteSampleN2 n items = [|for _ in 1..n -> discreteSampleIndex items|]
   
 let inline normalizeWeights data =
     let sum = Array.sumBy snd data |> float
@@ -86,7 +90,7 @@ let evolveSequence T atten mutateprob maxsize mem mutate
     let rec loop T steps mem =
         if steps = 0 then mem
         else
-            let population =  //tends to not explore as well so use Temperature
+            let population =  //tends to not explore as well if early is too good so use Temperature
                 distBuilder (fun () ->
                     let history =
                         discreteSample //sample a generation
@@ -125,13 +129,13 @@ let remember likelihood mutate maxsize mem (samples : _ []) =
     Distributions.categorical2 samples
     |> evolveSequence 1. 1. 0.1 maxsize mem mutate likelihood samples.Length 3 
 
-let inline testPath (paths : Dict<_,_>) k =
-    match paths.tryFind k with
+let inline testPath (paths : Dict<_,_>) x =
+    match paths.tryFind x with
     | Some -1. -> true, -1.
-    | Some x -> false, x
+    | Some r -> false, r
     | None -> false, 1.
 
-let rec propagateUp (paths : Dict<_,_>) r =
+let rec propagateUp attenuateUp (paths : Dict<_,_>) r =
     function
     | _ when r < 0.01 -> ()
     | [] -> ()
@@ -139,7 +143,13 @@ let rec propagateUp (paths : Dict<_,_>) r =
         paths.ExpandElseAdd path (fun v ->
             if v = -1. then v
             else max 0. (v + v * r)) (1. + r)
-        propagateUp paths (r * 0.5) path
+        propagateUp attenuateUp paths (r * attenuateUp) path
+
+type PathGuide<'a when 'a : equality>(?attenutate, ?priorPaths) =
+    let paths = defaultArg priorPaths (Dict<'a list,_>())
+    let atten = defaultArg attenutate 0.5
+    member __.PropagateUp r path = propagateUp atten paths r path
+    member __.TestPath path = testPath paths path  
 
 type SequenceSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate, scorer, ?temperature, ?attenuate, ?popMutatePF, ?popMutate) =
 
@@ -154,6 +164,7 @@ type SequenceSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate
         let samplespergen = defaultArg samplespergen 500
         let gens = defaultArg generations 50
         sequenceSamples T atten mp mutateOnPopulationPF scorer samplespergen gens generator
+        |> categorical2
 
     member __.SampleChain n =
         MetropolisHastings.sample2 atten T scorer mutate n (generator.Sample())
@@ -183,10 +194,7 @@ type SequenceSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate
         |> Helpers.Sampling.compactMapSamples id
         |> Array.sortByDescending snd
 
-    member __.SampleFromRaw n (dist : Distribution<_>) =
-        dist.SampleN(n)
-        |> Array.map (fun x -> x, scorer x)
-        |> Array.normalizeWeights
-        |> Helpers.Sampling.compactMapSamples id
+    member m.SampleFromRaw n (dist : Distribution<_>) =
+        m.SampleFrom n dist
         |> Array.map (fun (x, _) -> x, scorer x)
         |> Array.sortByDescending snd
