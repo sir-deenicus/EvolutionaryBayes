@@ -29,13 +29,16 @@ let dist = DistributionBuilder()
 let distBuilder2 sampler loglikelihood =
     { new Distribution<_> with 
         member __.Sample() = sampler()
-        member __.LogLikelihood x = loglikelihood x}
+        member __.LogLikelihood x = loglikelihood x} 
 
 let distBuilder sampler =
     { new Distribution<_> with 
         member __.Sample() = sampler()
         member __.LogLikelihood _ = failwith "No likelihood function"}
-
+          
+let toLikelihood distrs = 
+    List.sumBy (fun (x, d:Distribution<_>) -> d.LogLikelihood x) distrs 
+     
 let observe2 prior pdf observations parameters =
     prior parameters
     + List.sumBy (fun x -> log (max System.Double.Epsilon (pdf parameters x)))

@@ -26,7 +26,9 @@ type Regrets =
         else Array.zip e.NormalizedWeights actions
 
 let newExpert n =
-    { Weights = Array.create n 1. |> Array.normalize
+    { Weights = 
+        Array.create n 1. 
+        |> Array.normalize
       SumRegrets = Array.create n 0.
       Total = 0. }
 
@@ -50,7 +52,10 @@ let learningStep minr maxr rate actions reward (e, obsv) =
     Array.addInPlaceIntoFirst e.SumRegrets w
     e.Total <- e.Total + 1.
 
-type Expert<'a, 'actions, 'obs when 'a : equality>(reward, ?agentActions : 'actions [], ?learningrate, ?minreward, ?maxreward, ?prevweights, ?learner) =
+type RegretLearner<'a, 'actions, 'obs when 'a : equality>
+    (reward, ?agentActions : 'actions [], ?learningrate, 
+     ?minreward, ?maxreward, ?prevweights, ?learner) =
+
     let experts = defaultArg prevweights (Dict<'a, _>())
     let lr = defaultArg learningrate 0.1
     let minr = defaultArg minreward -1.
@@ -58,29 +63,52 @@ type Expert<'a, 'actions, 'obs when 'a : equality>(reward, ?agentActions : 'acti
     let learn = defaultArg learner (learningStep minr maxr lr)
     let mutable actions = defaultArg agentActions [||]
     let mutable dim = actions.Length
-
-    member __.Get k = experts.tryFind k 
+    
+    member __.Get k = experts.tryFind k
+    
     member __.GetOrAdd k = getExpert experts dim k
-    member __.New k = 
-        if not (experts.ContainsKey k) then 
-            experts.Add(k, newExpert dim)
-    member __.SetActions a = 
+
+    member __.New(k : 'a) =
+        if not (experts.ContainsKey k) then experts.Add(k, newExpert dim)
+
+    member m.New(items : _ seq) =
+        for k in items do
+            if not (experts.ContainsKey k) then experts.Add(k, newExpert dim)
+
+    member __.SetActions a =
         actions <- a
-        dim <- a.Length 
+        dim <- a.Length
+
     member __.TryFirst() =
-        Seq.tryHead experts 
-        |> Option.map (fun kv -> kv.Value)
-    member __.EditOrAddExpert newexpert k = editOrAdd experts k newexpert
-    member __.Learn k (observation : 'obs) =
+        Seq.tryHead experts |> Option.map (fun kv -> kv.Value)
+    
+    member __.EditOrAddExpert(k, newexpert) = editOrAdd experts k newexpert
+    
+    member __.Learn(k, observation : 'obs) =
         learn actions reward ((experts.[k]), observation)
+    
+    member t.Observe(observation) = t.Learn(observation)
+    
+    member t.Learn(observation : 'obs) =
+        t.TryFirst()
+        |> Option.iter (fun e -> learn actions reward (e, observation))
+    
     member __.Item k = experts.[k]
-    member __.SampleActionAt k = actions.[experts.[k].Sample()]
+    
+    member __.SampleActionOf k = actions.[experts.[k].Sample()]
+    
     member __.Actions = actions
+
+    member __.WeightedActions() =
+        [| for (KeyValue(k, e)) in experts -> k, e.WeightedActions actions |]
+
     member __.WeightedActionsFor k = experts.[k].WeightedActions actions
-    member  t.WeightedActionsZero() = 
-        t.TryFirst() 
-        |> Option.map (fun e -> e.WeightedActions actions)
+    
+    member t.WeightedActionsZero() =
+        t.TryFirst() |> Option.map (fun e -> e.WeightedActions actions)
+    
     member __.Experts = experts
+    
     member __.Forget() =
         for k in (Seq.toArray experts.Keys) do
             experts.[k] <- newExpert dim

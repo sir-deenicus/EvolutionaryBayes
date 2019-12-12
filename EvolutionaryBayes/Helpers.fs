@@ -1,4 +1,4 @@
-﻿module Helpers
+﻿module EvolutionaryBayes.Helpers
 open Prelude.Math
 open Prelude.Common
 open System
@@ -11,7 +11,7 @@ type Distribution<'T> with
 
 module Ops =    
     let (!) (d:Distribution<_>) = d.Sample() |> fst
-
+ 
 module Sampling =
     let roundAndGroupSamplesWith f samples =
         samples
@@ -41,6 +41,35 @@ module Sampling =
         |> Array.fold (fun fm m -> Map.merge (+) id m fm) Map.empty
         |> Map.toArray
 
+    let inline cdf (prob : _ []) =
+        let cd = Array.create prob.Length prob.[0] 
+        for i in 1..prob.Length - 1 do
+            let j = (prob.Length - i - 1) 
+            let (x, p) = prob.[i]
+            cd.[j] <- x, snd cd.[j+1] + p
+        cd
+      
+    let getDiscreteSample (pcdf : ('a * float) []) =
+        let k, pcdlen = 
+            random.NextDouble() * (snd pcdf.[0]), pcdf.Length - 1
+        
+        let rec cummProb idx =
+            if k > snd pcdf.[idx] then cummProb (idx - 1)
+            else idx, pcdf.[idx] 
+        let i, (item,_) = cummProb pcdlen 
+        i, item
+    
+    let discreteSampleIndex p = cdf p |> getDiscreteSample
+
+    let inline discreteSample p = discreteSampleIndex p |> snd
+
+    let discreteSampleN n items = [|for _ in 1..n -> discreteSample items|]
+
+    let discreteSampleN2 n items = [|for _ in 1..n -> discreteSampleIndex items|]
+  
+    let inline normalizeWeights data =
+        let sum = Array.sumBy snd data |> float
+        [|for (x,p) in data -> x, float p / sum|]
 
 module SampleSummarize =
     let smoothDistr alpha data =

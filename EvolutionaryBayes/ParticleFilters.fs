@@ -8,36 +8,7 @@ open Helpers
 open EvolutionaryBayes
 open System.Collections.Generic
 open EvolutionaryBayes.Distributions
-  
-let inline cdf (prob : _ []) =
-    let cd = Array.create prob.Length prob.[0] 
-    for i in 1..prob.Length - 1 do
-        let j = (prob.Length - i - 1) 
-        let (x, p) = prob.[i]
-        cd.[j] <- x, snd cd.[j+1] + p
-    cd
-      
-let getDiscreteSample (pcdf : ('a * float) []) =
-    let k, pcdlen = 
-        random.NextDouble() * (snd pcdf.[0]), pcdf.Length - 1
-        
-    let rec cummProb idx =
-        if k > snd pcdf.[idx] then cummProb (idx - 1)
-        else idx, pcdf.[idx] 
-    let i, (item,_) = cummProb pcdlen 
-    i, item
-    
-let discreteSampleIndex p = cdf p |> getDiscreteSample
-
-let inline discreteSample p = discreteSampleIndex p |> snd
-
-let discreteSampleN n items = [|for _ in 1..n -> discreteSample items|]
-
-let discreteSampleN2 n items = [|for _ in 1..n -> discreteSampleIndex items|]
-  
-let inline normalizeWeights data =
-    let sum = Array.sumBy snd data |> float
-    [|for (x,p) in data -> x, float p / sum|]
+open Helpers.Sampling
  
 let reweightWith likelihood samples =
     Array.countBy id samples
@@ -58,7 +29,7 @@ let importanceSamples (likelihood : 'a -> float) (n : int)
 let importanceSamplesArray (likelihood : 'a -> float) (n : int)
     (samples) = discreteSampleN n samples |> reweightWith likelihood
 
-let sequenceSamples T attenuate mutateprob mutate (likelihood : 'a -> float)
+let recursiveImportanceSampler T attenuate mutateprob mutate (likelihood : 'a -> float)
     (numparticles : int) (numsteps : int) (prior : Distribution<_>) =
     let choices = importanceSamples likelihood numparticles prior 
 
@@ -151,7 +122,7 @@ type PathGuide<'a when 'a : equality>(?attenutate, ?priorPaths) =
     member __.PropagateUp r path = propagateUp atten paths r path
     member __.TestPath path = testPath paths path  
 
-type SequenceSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate, scorer, ?temperature, ?attenuate, ?popMutatePF, ?popMutate) =
+type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate, scorer, ?temperature, ?attenuate, ?popMutatePF, ?popMutate) =
 
     let mutateOnPopulation = defaultArg popMutate (fun _ x -> mutate x)
 
@@ -163,7 +134,7 @@ type SequenceSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate
         let mp = defaultArg mutateprob 0.4
         let samplespergen = defaultArg samplespergen 500
         let gens = defaultArg generations 50
-        sequenceSamples T atten mp mutateOnPopulationPF scorer samplespergen gens generator
+        recursiveImportanceSampler T atten mp mutateOnPopulationPF scorer samplespergen gens generator
         |> categorical2
 
     member __.SampleChain n =
