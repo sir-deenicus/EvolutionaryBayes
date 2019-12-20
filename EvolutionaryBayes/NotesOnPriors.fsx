@@ -1,9 +1,11 @@
-﻿#r @"C:\Users\cybernetic\Code\Libs\net4+\Prelude\Prelude.dll"
+﻿//#r @"bin\Debug\net47\Prelude.dll"
+#r @"C:\Users\cybernetic\source\repos\Prelude\Prelude\bin\Release\net47\prelude.dll"
 #r @"bin\Debug\netcoreapp2.1\EvolutionaryBayes.dll"
 #r @"C:\Users\cybernetic\Code\Libs\MathNet\lib\net40\MathNet.Numerics.dll"
 #time
 
 open MathNet.Numerics.Distributions
+open Prelude.Common 
 
 (* Feb 10, 2019
 Currently, the Metropolis Hastings sampler is not bayesian in the sense of pulling towards some prior. 
@@ -40,8 +42,9 @@ are more important anyways wrt intended usage.
 Priors are more relevant for metropolis hastings--not importance. And 
 they are now naturally incorporated now by adding the prior's density for the parameters to the
 likelihoods.
-*) 
- 
+*)  
+
+
 type Distribution<'T> =
     abstract Sample : unit -> 'T * float  
     abstract LogLikelihood : 'T -> float

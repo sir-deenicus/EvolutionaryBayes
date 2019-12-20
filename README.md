@@ -67,6 +67,8 @@ In addition to the MCMC/simulated annealing hybrid, the Particle Filter section 
 *Quoting a code comment:*
 
 > Inspired by evolution (see papers on regret minimization's connection to evolution), this method maintains a memory where each element is a set of samples weighted by their average performance. The head of this list is the most recent generation. Worst performing generations are evicted when memory size limit is reached. Hopefully, by then their descendants can be found in later generations. At each step, a generation is sampled and then a member of that generation. Because the memory size is bounded there is a fixed upper bound on total samples with the population mixing and hopefully drifting towards the most fit.
+>
+> ///If the prior is too strong (such as an `always` or other with too little variation), this will end up dominating the evolutionary trajectory, acting like a strong gravitational attractor causing exploration to stick too close the initial state. Forget prior is for when the prior is too certain (which is often when you can’t think of a good generator).
 
 The most useful aspect of this approach is allows any method that generates samples to be capable of incremental online learning that resists catastrophic forgetting from drift.
 

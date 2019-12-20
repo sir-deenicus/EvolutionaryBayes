@@ -21,25 +21,17 @@ module Sampling =
         |> Array.map (keepLeft (Array.length >> float))
         |> Array.normalizeWeights
     
-    let compactMapSamples f samples =
+    let compactMapSamplesAgg aggregator f samples =
         Array.map (fun (x, p : float) -> f x, p) samples
         |> Array.groupBy fst
-        |> Array.map (fun (x, xs) -> x, Array.sumBy snd xs)
+        |> Array.map (fun (x, xs) -> x, aggregator snd xs)
         |> Array.normalizeWeights
-    
-    let aggregateSamples nIters sampler =
-        let updaterate = max 1 (nIters / 10)
-        let mutable nelements = 0
-        [| for i in 0..nIters do
-               let samples = sampler() 
-               let els = Array.countElements samples
-               nelements <- nelements + els.Count
-               if i % updaterate = 0 then 
-                   printfn "%d of %d" i nIters
-                   printfn "%d elements" nelements
-               yield (els) |]
-        |> Array.fold (fun fm m -> Map.merge (+) id m fm) Map.empty
-        |> Map.toArray
+      
+    let compactMapSamplesSum f samples =
+        compactMapSamplesAgg Array.sumBy f samples
+
+    let compactMapSamplesAvg f samples =
+        compactMapSamplesAgg Array.averageBy f samples
 
     let inline cdf (prob : _ []) =
         let cd = Array.create prob.Length prob.[0] 
@@ -81,7 +73,7 @@ module SampleSummarize =
         |> List.toArray
         |> Array.normalizeWeights
 
-    let inline computeDistrAverage transform d = Array.sumBy (fun (x, p) -> transform x * p) d
+    let inline computeDistAverage transform d = Array.sumBy (fun (x, p) -> transform x * p) d
 
     let computeCredible sortBy roundpsTo p1 p2 dat =
         let rec loop cumulativeProb ps =

@@ -29,7 +29,7 @@ let importanceSamples (likelihood : 'a -> float) (n : int)
 let importanceSamplesArray (likelihood : 'a -> float) (n : int)
     (samples) = discreteSampleN n samples |> reweightWith likelihood
 
-let recursiveImportanceSampler T attenuate mutateprob mutate (likelihood : 'a -> float)
+let recursiveImportanceSample T attenuate mutateprob mutate (likelihood : 'a -> float)
     (numparticles : int) (numsteps : int) (prior : Distribution<_>) =
     let choices = importanceSamples likelihood numparticles prior 
 
@@ -52,26 +52,30 @@ let recursiveImportanceSampler T attenuate mutateprob mutate (likelihood : 'a ->
 ///in later generations. At each step, a generation is sampled and then a member of that generation.
 ///Because the memory size is bounded there is a fixed upper bound on total samples with the population
 ///mixing and hopefully drifting towards the most fit.
-let evolveSequence T atten mutateprob maxsize mem mutate
+///If the prior is too strong (such as an always or with too little variation), this will 
+///end up dominating the evolution, acting like a strong gravitational attractor causing
+///exploration to stick too close to the initial state. Forget prior is for when the prior is too certain.
+let evolveSequence T atten forgetPrior mutateprob maxsize mem mutate
     (likelihood : 'a -> float) (samplesPerGen : int) (numSteps : int)
     (prior : Distribution<_>) =
-    let choices = importanceSamples likelihood samplesPerGen prior
-    let dist' = choices, Array.averageBy snd choices
 
     let rec loop T steps mem =
         if steps = 0 then mem
         else
-            let population =  //tends to not explore as well if early is too good so use Temperature
-                distBuilder (fun () ->
-                    let history =
-                        discreteSample //sample a generation
-                            (normalizeWeights [| for (m, p) in mem -> m, p ** (1. / T) |]) 
+            let population =  
+                match mem with
+                | [] -> prior
+                | _ ->
+                    distBuilder (fun () ->
+                        let history =
+                            discreteSample //sample a generation
+                                (normalizeWeights [| for (m, p) in mem -> m, p ** (1. / T) |]) 
 
-                    let hypothesis =
-                        discreteSample //sample a hypothesis from selected generation
-                            (Array.map (fun (x, p) -> x, p ** (1. / T)) history
-                            |> normalizeWeights) 
-                    hypothesis)
+                        let hypothesis =
+                            discreteSample //sample a hypothesis from selected generation
+                                (Array.map (fun (x, p) -> x, p ** (1. / T)) history
+                                |> normalizeWeights) 
+                        hypothesis)
 
             let samples =
                 population.SampleN samplesPerGen
@@ -90,7 +94,12 @@ let evolveSequence T atten mutateprob maxsize mem mutate
                     List.sortByDescending snd mem' |> List.take maxsize
                 else mem'
             loop (max 1. (T * atten)) (steps - 1) memory
-    loop T numSteps (dist' :: mem)
+    
+    let guesses = importanceSamples likelihood samplesPerGen prior
+    let mem' = 
+        if forgetPrior then mem
+        else (guesses, Array.averageBy snd guesses) :: mem
+    loop T numSteps mem'
 
 ///The purpose of this function is to take a set of weighted samples and inject or remember it into
 ///existing memory by drawing the most probable samples and comparing against an existing population.
@@ -98,7 +107,7 @@ let evolveSequence T atten mutateprob maxsize mem mutate
 ///fittest members of this sample.
 let remember likelihood mutate maxsize mem (samples : _ []) =
     Distributions.categorical2 samples
-    |> evolveSequence 1. 1. 0.1 maxsize mem mutate likelihood samples.Length 3 
+    |> evolveSequence 1. 1. false 0.1 maxsize mem mutate likelihood samples.Length 3 
 
 let inline testPath (paths : Dict<_,_>) x =
     match paths.tryFind x with
@@ -122,7 +131,9 @@ type PathGuide<'a when 'a : equality>(?attenutate, ?priorPaths) =
     member __.PropagateUp r path = propagateUp atten paths r path
     member __.TestPath path = testPath paths path  
 
-type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, mutate, scorer, ?temperature, ?attenuate, ?popMutatePF, ?popMutate) =
+type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, scorer, ?mutate,?temperature, ?attenuate, ?popMutatePF, ?popMutate) =
+
+    let mutate = defaultArg mutate id
 
     let mutateOnPopulation = defaultArg popMutate (fun _ x -> mutate x)
 
@@ -130,11 +141,11 @@ type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, muta
 
     let T, atten = defaultArg temperature 1., defaultArg attenuate 1.
 
-    member __.SequenceSamples(?mutateprob, ?samplespergen, ?generations) =
+    member __.RecursiveImportanceSample(?mutateprob, ?samplespergen, ?generations) =
         let mp = defaultArg mutateprob 0.4
         let samplespergen = defaultArg samplespergen 500
         let gens = defaultArg generations 50
-        recursiveImportanceSampler T atten mp mutateOnPopulationPF scorer samplespergen gens generator
+        recursiveImportanceSample T atten mp mutateOnPopulationPF scorer samplespergen gens generator
         |> categorical2
 
     member __.SampleChain n =
@@ -142,15 +153,18 @@ type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, muta
         |> Sampling.roundAndGroupSamplesWith id
         |> categorical2
 
-    member __.EvolveSequence(?mutateprob, ?maxpopsize, ?samplespergen,
-                             ?generations) =
-        let mp = defaultArg mutateprob 0.4
-        let maxpopsize = defaultArg maxpopsize 250
+    ///If the prior is too strong (such as an always or other with too little variation), this will 
+    ///end up dominating the evolution, acting like a strong gravitational attractor causing
+    ///exploration to stick to close the initial state. Forget prior is for when the prior is too certain.
+    member __.EvolveSequence(?mutateprob, ?maxpoplen, ?samplespergen,
+                             ?generations, ?forgetPrior) =
+        let mp = defaultArg mutateprob 0.65
+        let maxpopsize = defaultArg maxpoplen 100
         let samplespergen = defaultArg samplespergen 500
         let gens = defaultArg generations 50
-
+        let forgetInit = defaultArg forgetPrior false
         let pops =
-            evolveSequence T atten mp maxpopsize [] mutateOnPopulation scorer
+            evolveSequence T atten forgetInit mp maxpopsize [] mutateOnPopulation scorer
                 samplespergen gens generator
             |> List.toArray
             |> Array.normalizeWeights
@@ -162,7 +176,7 @@ type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, muta
         dist.SampleN(n)
         |> Array.map (fun x -> x, scorer x)
         |> Array.normalizeWeights
-        |> Helpers.Sampling.compactMapSamples id
+        |> Helpers.Sampling.compactMapSamplesAvg id
         |> Array.sortByDescending snd
 
     member m.SampleFromRaw n (dist : Distribution<_>) =
