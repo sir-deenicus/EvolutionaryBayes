@@ -21,12 +21,13 @@ open EvolutionaryBayes.ProbMonad
 open EvolutionaryBayes.Distributions
 open EvolutionaryBayes.Helpers 
 open EvolutionaryBayes 
+open EvolutionaryBayes
 
 let rec flips n bs p =
     dist {
         if n = 0 then return bs
-        else 
-            let! b = bernoulliChoice 5. -5. p
+        else  
+            let! b = bernoulliChoice 3. -3. p
             return! flips (n-1) (b::bs) p
     }
 
@@ -39,18 +40,19 @@ let mix (l1: _ list) (l2: _ list) =
         if bin.Sample() then l1.[i] else l2.[i]] 
 
 let populationFit p =
-    let d = flips 16 [] p
+    let d = flips 27 [] p
     let avg =
         d.SampleN 1000
         |> Array.averageBy (List.sum >> ((+) 100.))
     1./(0.0001 + abs(avg - 80.))
 
-let p = flips 16 [] 0.5
+let p = flips 27 [] 0.5
 
 let p1 = p.Sample()
 let p2 = p.Sample()
 
 100. + List.sum p2
+100. + List.sum p1
 
 let a () = mix p1 p2 |> List.sum
 
@@ -63,9 +65,16 @@ let a () = mix p1 p2 |> List.sum
 |> Sampling.roundAndGroupSamplesWith id
 |> SampleSummarize.computeDistAverage id
 
+(116. + 92.)/2.
+
 p.SampleN 10000
 |> Array.averageBy (List.sum >> ((+) 100.)) 
 
+[|for i in 1..1000 -> (p.Sample() |> List.sum) + 100.|]
+|> Sampling.roundAndGroupSamplesWith id
+|> Chart.Column
+|> drawPlot
+ 
 
 let m1 =
     ParticleFilters.PopulationSampler
@@ -97,8 +106,8 @@ p.SampleN 10000
 let newgen l =
     let p =
         l |> List.sum
-          |> scaleTo 0. 1. -80. 80.
-    (flips 16 [] p).Sample()
+          |> scaleTo 0. 1. -81. 81.
+    (flips 27 [] p).Sample()
 
 mix p1 p2 |> newgen |> List.sum |> (+) 100.
 
@@ -107,32 +116,56 @@ mix p1 p2 |> newgen |> List.sum |> (+) 100.
 |> Chart.Column
 |> drawPlot
 
-mix p1 p2  |> List.sum |> scaleTo 0. 1. -80. 80. 
+[|for i in 1..1000 -> mix p1 p2  |> newgen |> List.sum |> (+) 100.|]
+|> Sampling.roundAndGroupSamplesWith id
+|> SampleSummarize.computeDistAverage id
 
+
+  
 let m =
     ParticleFilters.PopulationSampler
-        (generator = flips 16 [] 0.5, 
+        (generator = flips 27 [] 0.5, 
          popMutate = (fun p m -> newgen (mix (p.Sample()) m)),
          scorer =
              (List.sum
               >> ((+) 100.)
-              >> logisticRange 50. 100.))
+              >> logisticRange 65. 95.))
 
-let resx = m.EvolveSequence(generations = 200, samplespergen = 500, maxpoplen = 50)
+let resx = m.EvolveSequence(generations = 100, samplespergen = 2000, maxpoplen = 50)
 
-resx.SampleN(10000) |> Array.map (List.sum >> ((+) 100.))
-|> Sampling.roundAndGroupSamplesWith id
-|> SampleSummarize.computeDistAverage id
+let rate p =
+    let q = List.sum p + 100.
+    let acc = bernoulli (logisticRange 95. 120. q)
+    let g = bernoulli 0.05 
+    acc.Sample() && g.Sample()
+ 
+let smarts, regs = resx.SampleN(1000) |> Array.partition rate
+
+let todist = ParticleFilters.weightWith (List.sum >> ((+) 100.) >> logisticRange 65. 95.) >> categorical2 
+
+let g1 =
+    smarts |> Array.map (List.sum >> ((+) 100.))
+    |> Sampling.roundAndGroupSamplesWith id
+
+let g2 =
+    regs |> Array.map (List.sum >> ((+) 100.))
+    |> Sampling.roundAndGroupSamplesWith id
+
+[g1;g2] |> Chart.Column |> drawPlot
+
+g1 |> SampleSummarize.computeDistAverage id
+g2 |> SampleSummarize.computeDistAverage id
+ 
 
 let zzx pr g =
     let m =
         ParticleFilters.PopulationSampler
-            (generator = flips 16 [] pr, 
+            (generator = pr, 
              popMutate = (fun p m -> newgen (mix (p.Sample()) m)),
              scorer =
                  (List.sum
                   >> ((+) 100.)
-                  >> logisticRange 70. 130.))
+                  >> logisticRange 65. 95.))
 
     let resx = 
         m.EvolveSequence(generations = g, samplespergen = 500, maxpoplen = 50)
@@ -140,16 +173,16 @@ let zzx pr g =
     resx.SampleN(10000)
     |> Array.map (List.sum >> ((+) 100.))
     |> Sampling.roundAndGroupSamplesWith id
-    |> SampleSummarize.computeDistAverage id
+    |> SampleSummarize.computeDistAverage id, resx
 
+let smd = (todist smarts) 
+let rd = (todist regs) 
+let dd = [for i in 0..10..250 -> zzx smd i]
+let dd2 = [for i in 0..10..250 -> zzx rd i]
 
-let dd = [for i in 0..10..300 -> zzx 0.37 i]
-let dd2 = [for i in 0..10..300 -> zzx 0.5 i]
+List.map (List.map fst >> List.indexed) [dd;dd2] |> Chart.Line |> drawPlot
 
-[dd |> List.indexed;dd2|> List.indexed] |> Chart.Line |> drawPlot
+let d11 = (dd |> List.last |> snd).SampleN(10000) |> Array.map (List.sum >> ((+) 100.)) |> Sampling.roundAndGroupSamplesWith id
 
-resx.SampleN(10000) |> Array.map (List.sum >> ((+) 100.))
-|> Sampling.roundAndGroupSamplesWith id
-|> Chart.Column
-|> drawPlot
- 
+let d21 = (dd2 |> List.last |> snd).SampleN(10000) |> Array.map (List.sum >> ((+) 100.)) |> Sampling.roundAndGroupSamplesWith id
+[d11;d21] |> Chart.Column |> drawPlot
