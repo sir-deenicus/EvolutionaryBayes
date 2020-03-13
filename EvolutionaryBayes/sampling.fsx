@@ -8,28 +8,28 @@ open System
 open MathNet.Numerics.Distributions
 open EvolutionaryBayes.ProbMonad
 open EvolutionaryBayes.Distributions
-open Helpers
 open Prelude.Math
 open EvolutionaryBayes
+open EvolutionaryBayes.Helpers
+  
 
 let data = [for _ in 0..999 -> Normal(10., 10.).Sample()]
  
 let lik = observe ((normal 0. 1.).LogLikelihood) (fun parameters x -> Normal(parameters, 1.).DensityLn x) [ 5.; 10.; 4. ]// [ 10.; ]//data // [ 5.; 10.; 4. ]// 
 
-EvolutionaryBayes.MetropolisHastings.sample 0.5 lik (fun x -> 
-    if (bernoulli 0.5).Sample() then x + 0.1
-    else x - 0.1) (normal 0. 1.) 100_000
+EvolutionaryBayes.MetropolisHastings.sampleBasic lik (normal 0. 1.) 100_000
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd  
 
-EvolutionaryBayes.MetropolisHastings.sample2 0.9 100. lik (fun x -> 
+EvolutionaryBayes.MetropolisHastings.sample 0.9 100. lik (fun x -> 
     if (bernoulli 0.5).Sample() then x + 0.1
     else x - 0.1) 100_000 (0.)
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd  
 
 let flik = observePriorLess (fun parameters x -> Normal(parameters, 1.).DensityLn x) [ 5.; 10.; 4. ]
-EvolutionaryBayes.MetropolisHastings.sample 0. flik id (normal 0. 1.) 100_000
+
+EvolutionaryBayes.MetropolisHastings.sample 1. 1. flik (fun x -> x + Array.sampleOne [|-0.1;0.1|]) 100_000 0.
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd 
 
@@ -67,10 +67,10 @@ let points =
 
 let prior (m,b) = toLikelihood [m,normal 0. 10.; b, normal 0. 10.] 
 
-let lik2 = observe prior (fun (m, b) (x, y) -> Normal(m * x + b, 1.).DensityLn y) points // [ 5.; 10.; 4. ]//
+let likb = observe prior (fun (m, b) (x, y) -> Normal(m * x + b, 1.).DensityLn y) points // [ 5.; 10.; 4. ]//
 
 let rs =
-    MetropolisHastings.sample2 0.9 100. lik2 (fun (m, b) ->
+    MetropolisHastings.sample 0.9 100. likb (fun (m, b) ->
         let ps = [| m; b |]
         let i = random.Next(0, ps.Length)
         ps.[i] <- ps.[i] + random.NextDouble(-0.1, 0.1)
@@ -85,4 +85,4 @@ let m = ParticleFilters.PopulationSampler(normal 80. 15., (fun p -> (normal p 15
 
 m.EvolveSequence(generations = 10)
 |> m.SampleFrom 1000
-|> Sampling.compactMapSamples (round 0)
+|> Sampling.compactMapSamplesSum (round 0)

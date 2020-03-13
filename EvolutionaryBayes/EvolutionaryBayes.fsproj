@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>netcoreapp2.1;netstandard2.0;net47</TargetFrameworks>
-    <Version>0.2.3</Version>
+    <Version>0.2.5</Version>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   </PropertyGroup>
 
@@ -13,8 +13,8 @@
     <None Include="NotesOnPriors.fsx" />
     <Compile Include="ProbMonad.fs" />
     <Compile Include="Distributions.fs" />
-    <Compile Include="MetropolisHastings.fs" />
     <Compile Include="Helpers.fs" />
+    <Compile Include="MetropolisHastings.fs" />
     <Compile Include="ParticleFilters.fs" />
     <Compile Include="SimulatedAnnealing.fs" />
     <None Include="sampling.fsx" />

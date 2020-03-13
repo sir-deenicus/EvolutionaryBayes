@@ -115,20 +115,23 @@ let inline testPath (paths : Dict<_,_>) x =
     | Some r -> false, r
     | None -> false, 1.
 
-let rec propagateUp attenuateUp (paths : Dict<_,_>) r =
+let rec propagateUp maxWeight isreward (paths : Dict<_, _>) attenuateUp r =
     function
     | _ when r < 0.01 -> ()
     | [] -> ()
     | (_ :: path) ->
         paths.ExpandElseAdd path (fun v ->
-            if v = -1. then v
-            else max 0. (v + v * r)) (1. + r)
-        propagateUp attenuateUp paths (r * attenuateUp) path
+            if v = -1. || v >= maxWeight then v
+            else max 0. (if isreward then v + r
+                         else v * r)) (if isreward then min maxWeight (1. + r)
+                                       else r)
+        propagateUp maxWeight isreward paths attenuateUp (r * attenuateUp) path
 
-type PathGuide<'a when 'a : equality>(?attenutate, ?priorPaths) =
+type PathGuide<'a when 'a : equality>(?attenutate, ?priorPaths, ?maxPropagatorWeight) =
     let paths = defaultArg priorPaths (Dict<'a list,_>())
     let atten = defaultArg attenutate 0.5
-    member __.PropagateUp r path = propagateUp atten paths r path
+    let propweight = defaultArg maxPropagatorWeight 1.
+    member __.PropagateUp isreward r path = propagateUp propweight isreward paths atten r path
     member __.TestPath path = testPath paths path  
 
 type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, scorer, ?mutate,?temperature, ?attenuate, ?popMutatePF, ?popMutate) =
@@ -149,7 +152,7 @@ type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, scor
         |> categorical2
 
     member __.SampleChain n =
-        MetropolisHastings.sample2 atten T scorer mutate n (generator.Sample())
+        MetropolisHastings.sample atten T scorer mutate n (generator.Sample())
         |> Sampling.roundAndGroupSamplesWith id
         |> categorical2
 

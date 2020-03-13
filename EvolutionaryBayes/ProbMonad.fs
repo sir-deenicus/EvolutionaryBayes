@@ -44,12 +44,12 @@ let observe2 prior pdf observations parameters =
     + List.sumBy (fun x -> log (max System.Double.Epsilon (pdf parameters x)))
           observations
 
-let inline observe prior pdf observations parameters =
+let inline observe prior logpdf observations parameters =
     prior parameters
-    + List.sumBy (pdf parameters) observations
+    + List.sumBy (logpdf parameters) observations
 
-let inline observePriorLess pdf observations parameters =
-    List.sumBy (pdf parameters) observations
+let inline observePriorLess logpdf observations parameters =
+    List.sumBy (logpdf parameters) observations
 
 let inline logdiv a b = exp(a - b)
 

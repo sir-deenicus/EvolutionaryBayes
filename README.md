@@ -121,7 +121,7 @@ HMC requires priors. To support this, you can write your prior as a sum, as show
 ```
 **Hyper-parameters (*not implemented yet)***
 
-To get good results, HMC requires parameter tuning. I believe one way to do this is with hyper-gradients. After a small number of samples are drawn, their mean is taken and used to compute the log probability of some validation sample. The loss is then used to tune the gradients to adjust gradient step size and number of leap frog steps. A similar thing can be done for a mass matrix. Indeed, a wilder idea would be to search for a matrix that random projects up according to some fixed matrix into the matrix or diagonal of appropriate dimension. That sort of unmotivated hail mary is done all the time in neural networks and I think is part of the community's strength.
+To get good results, HMC requires parameter tuning. I believe one way to do this is with hyper-gradients. After a small number of samples are drawn and used to compute the log probability of some validation sample. The loss is then used to tune the gradients, adjusting gradient step size and number of leap frog steps. Could a similar thing can be done for the mass matrix?
 
 **Evolutionary Methods**
 
@@ -131,11 +131,11 @@ In addition, to hyper-gradients, EvoBayes could be used to search for starting s
 
 Most people's idea of combining probabilistic programming and deep learning is by putting a distribution on parameter weights. My opinion is this is not the most ideal combination of both ideas. You're still doing optimization and if you were not making some trade-off then integration would be easy in the first place (eg, Variational autoencoders are limited and don't generalize well, normalizing flows have stability issues, bayesian neural nets have scalability and generalization issues, graph bayesian neural nets—are you sure you Infer.net is not suitable to your problem—variational methods are biased and don't do well at the tail).
 
-One place Neural nets could work is as density estimators. A small neural net could be trained on the required interval and it would stand in place for any density of interest. This would widely increase the class of available models.
+One place Neural nets could work is as density estimators. A small neural net could be trained on the required interval and it would stand in place for any density of interest. This could increase the class of available models.
 
 **Online Learning**
 
-The particle filters of EvoBayes could also be used for the HMC sampler. The samples can be fed and then kept live using the evolutionary sequential sampler. The HMC sampler accepts the ability to use a generative prior. With such starting points, assuming not from scratch, burn-in is no longer required and the generative prior can be used to improve exploration while the particle filter increases or remembers and forgets (appropriately) samples online. 
+The particle filters of EvoBayes could also be used for the HMC sampler. The samples can be fed and then kept live using the evolutionary sequential sampler. The HMC sampler accepts the ability to use a generative prior. With such starting points, assuming not from scratch, burn-in is less a requirement and the generative prior can be used to improve exploration while the particle filter increases or remembers and forgets (appropriately) samples online. 
 
 You can sample say, 1000 samples  from 100 start point. Each of the 100, are started from an existing sample which will be surviving samples from the higher density locations. This approach I suspect, can be made to scale very well across computers.
 
