@@ -51,40 +51,18 @@ module MetropolisHastings =
         iterate2 attentuate T n perturb likelihood (likelihood init, init)
 
 
-type MCMC<'data, 'sample, 'categorical when 'categorical : equality>
+type MCMC<'data, 'sample>
         (mutator, loglikelihood, init, ?nsamples, ?Temperature, ?attenuate) =
 
     let T = defaultArg Temperature 1.
     let atten = defaultArg attenuate 1.
     let numsamples = defaultArg nsamples 100_000 
     let samples = ResizeArray<'sample>() 
-    let mutable catdist : Distribution<'categorical> option = None
     let mutable defaultData : option<'data> = None
-
-    member __.BuildCategorical f =
-        catdist <- samples
-                   |> Sampling.roundAndGroupSamplesWith f
-                   |> categorical2
-                   |> Some
 
     member __.Samples = Seq.toArray samples
 
-    member __.SamplesGroupedWith f =
-        samples
-        |> Sampling.roundAndGroupSamplesWith f
-        |> Array.sortByDescending snd
-
     member __.DefaultData with get() = defaultData and set d = defaultData <- d
-
-    member __.SampleCategoricalWith f n =
-        match catdist with
-        | Some c -> c.SampleN n |> Array.map f
-        | None -> [||]
-
-    member __.SampleCategorical n =
-        match catdist with
-        | Some c -> c.SampleN n 
-        | None -> [||]
 
     member __.Sample(?points : 'data list, ?samplecount) =
         samples.Clear()

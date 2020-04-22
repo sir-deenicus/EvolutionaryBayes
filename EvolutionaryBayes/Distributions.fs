@@ -124,3 +124,9 @@ let cauchy loc scale =
     { new Distribution<float> with
         member d.Sample() = c.Sample()
         member d.LogLikelihood x = c.DensityLn x}
+
+let pareto scale shape =
+    let c = Pareto(scale , shape)
+    { new Distribution<float> with
+        member d.Sample() = c.Sample()
+        member d.LogLikelihood x = c.DensityLn x}

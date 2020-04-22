@@ -152,7 +152,7 @@ type PopulationSampler<'a when 'a : equality>(generator : Distribution<'a>, scor
         |> categorical2
 
     member __.SampleChain n =
-        MetropolisHastings.sample atten T scorer mutate n (generator.Sample())
+        MetropolisHastings.sample atten T (scorer>>log) mutate n (generator.Sample())
         |> Sampling.roundAndGroupSamplesWith id
         |> categorical2
 

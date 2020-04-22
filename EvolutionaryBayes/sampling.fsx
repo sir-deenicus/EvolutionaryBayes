@@ -16,18 +16,18 @@ open EvolutionaryBayes.Helpers
 let data = [for _ in 0..999 -> Normal(10., 10.).Sample()]
  
 let lik = observe ((normal 0. 1.).LogLikelihood) (fun parameters x -> Normal(parameters, 1.).DensityLn x) [ 5.; 10.; 4. ]// [ 10.; ]//data // [ 5.; 10.; 4. ]// 
-
-EvolutionaryBayes.MetropolisHastings.sampleBasic lik (normal 0. 1.) 100_000
-|> Sampling.roundAndGroupSamplesWith (round 1)
-|> Array.sortByDescending snd  
-
-EvolutionaryBayes.MetropolisHastings.sample 0.9 100. lik (fun x -> 
+  
+EvolutionaryBayes.MetropolisHastings.sample 1. 1. lik (fun x -> 
     if (bernoulli 0.5).Sample() then x + 0.1
     else x - 0.1) 100_000 (0.)
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd  
 
 let flik = observePriorLess (fun parameters x -> Normal(parameters, 1.).DensityLn x) [ 5.; 10.; 4. ]
+
+EvolutionaryBayes.MetropolisHastings.sampleBasic flik (normal 0. 1.) 100_000
+|> Sampling.roundAndGroupSamplesWith (round 1)
+|> Array.sortByDescending snd 
 
 EvolutionaryBayes.MetropolisHastings.sample 1. 1. flik (fun x -> x + Array.sampleOne [|-0.1;0.1|]) 100_000 0.
 |> Sampling.roundAndGroupSamplesWith (round 1)
