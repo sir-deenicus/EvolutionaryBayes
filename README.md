@@ -84,6 +84,8 @@ Transitions and perturbations are a key idea in EvoBayes. Consider the following
 ```
 As I mentioned before, this aspect is not too dissimilar to simulated annealing. The advantage now is a nice DSL and a maintained population to capture uncertainty. 
 
+Alternatively, a distribution can be used as a quick way to get a mutator or proposal by using the pattern: `fun parameter -> distribution(parameter).Sample()` using some appropriate distribution.
+
 **Regret**
 
 Of course, as the dimensionality of the problem grows, exploration becomes an issue. One method to alleviate this is to have min-regret learners at each array index such that something other than uniform sampling is used to decide which weight to adjust. One can even imagine a tree based approach where the selected index propagates an attenuated reward up a tree which selects nodes randomly till a leaf (index) is reached.
