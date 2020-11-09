@@ -7,7 +7,7 @@ open Helpers
 module MetropolisHastings =
     let internal iterate n (lik : 'a -> float)
         (proposal : Distribution<_>) (initial : float * 'a) =
-        let rec loop newChain (p, chainState) n =
+        let rec loop newChain (p, currentState) n =
             if n = 0 then newChain
             else
                 let nextDist =
@@ -16,7 +16,7 @@ module MetropolisHastings =
                         let p' = lik candidate
                         let! accept = bernoulli (min 1. (logdiv p' p))
                         if accept then return (p', candidate)
-                        else return (p, chainState) 
+                        else return (p, currentState) 
                     }
 
                 let next = nextDist.Sample()
@@ -27,16 +27,16 @@ module MetropolisHastings =
 
     let iterate2 attenuate T0 n perturb (lik : 'a -> float)
         (initial : float * 'a) =
-        let rec loop T newChain (p, chainState) n =
+        let rec loop T newChain (p, currentstate) n =
             if n = 0 then newChain
             else
-                let state' = perturb chainState
+                let state' = perturb currentstate
                 let p' = lik state'
                 let accept' = bernoulli (min 1. (logdivT T p' p))
 
                 let next =
                     if accept'.Sample() then (p', state')
-                    else (p, chainState)
+                    else (p, currentstate)
 
                 let T' = max 1. (T * attenuate)
                 loop T' (snd next :: newChain) next (n - 1)
@@ -50,7 +50,7 @@ module MetropolisHastings =
     let sample attentuate T likelihood perturb (n : int) init =
         iterate2 attentuate T n perturb likelihood (likelihood init, init)
 
-
+///The perturbation/mutation step can be a sampler whose parameters are the current state. 
 type MCMC<'data, 'sample>
         (mutator, loglikelihood, init, ?nsamples, ?Temperature, ?attenuate) =
 

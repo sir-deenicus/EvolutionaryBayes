@@ -12,6 +12,7 @@ open Prelude.Math
 open EvolutionaryBayes
 open EvolutionaryBayes.Helpers
   
+//The perturbation step can be a sample whose parameters are the current state. 
 
 let data = [for _ in 0..999 -> Normal(10., 10.).Sample()]
  
@@ -25,11 +26,20 @@ EvolutionaryBayes.MetropolisHastings.sample 1. 1. lik (fun x ->
 
 let flik = observePriorLess (fun parameters x -> Normal(parameters, 1.).DensityLn x) [ 5.; 10.; 4. ]
 
-EvolutionaryBayes.MetropolisHastings.sampleBasic flik (normal 0. 1.) 100_000
+EvolutionaryBayes.MetropolisHastings.sampleBasic lik (normal 0. 1.) 100_000
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd 
 
 EvolutionaryBayes.MetropolisHastings.sample 1. 1. flik (fun x -> x + Array.sampleOne [|-0.1;0.1|]) 100_000 0.
+|> Sampling.roundAndGroupSamplesWith (round 1)
+|> Array.sortByDescending snd 
+
+EvolutionaryBayes.MetropolisHastings.sample 1. 1. lik (fun x -> x + Array.sampleOne [|-0.1;0.1|]) 100_000 0.
+|> Sampling.roundAndGroupSamplesWith (round 1)
+|> Array.sortByDescending snd 
+
+
+EvolutionaryBayes.MetropolisHastings.sample 1. 1. lik (fun x -> Normal(x,1.).Sample()) 100_000 0.
 |> Sampling.roundAndGroupSamplesWith (round 1)
 |> Array.sortByDescending snd 
 

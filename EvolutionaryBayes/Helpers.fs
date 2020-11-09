@@ -57,7 +57,18 @@ module Sampling =
 
     let discreteSampleN n items = [|for _ in 1..n -> discreteSample items|]
 
-    let discreteSampleN2 n items = [|for _ in 1..n -> discreteSampleIndex items|]
+    let discreteSampleN_b n items = [|for _ in 1..n -> discreteSampleIndex items|]
+
+    let sampleN_No_Replacements n items =
+        let rec sampleN_without_replacement i ch =
+            function
+            | _ when i >= n -> ch
+            | [] -> ch
+            | choices ->
+                let choice = discreteSample (List.toArray choices)
+                let rem = List.filter (fst >> (<>) choice) choices
+                sampleN_without_replacement (i + 1) (choice::ch) rem
+        sampleN_without_replacement 0 [] items
   
     let inline normalizeWeights data =
         let sum = Array.sumBy snd data |> float
