@@ -1,32 +1,38 @@
-﻿#r @"bin\Release\net47\Prelude.dll"
-#r @"bin\Release\net47\EvolutionaryBayes.dll"
+﻿#r @"C:\Users\cybernetic\source\repos\Prelude\Prelude\bin\Release\netstandard2.1\Prelude.dll"
+#r @"bin\Debug\netstandard2.1\EvolutionaryBayes.dll"
 
+open Prelude
+open Prelude.Math
 open EvolutionaryBayes.RegretMinimization
-
+ 
 type Dir = Stop | Go
 
-let rewardD = function
-   | (Go, Go) -> -100.
-   | (Go, Stop) -> 1.
-   | (Stop, Go) -> 0.
-   | (Stop, Stop) -> 0. 
+let reward =
+    function
+    | (Go, Go) -> -100.
+    | (Go, Stop) -> 1.
+    | (Stop, Go) -> 0.
+    | (Stop, Stop) -> 0.
 
-let experts = RegretLearner<int,_,_>( rewardD, [|Go;Stop|], minreward = -100., maxreward = 100.)        
+let expert1 =
+    RegretLearner<_, _>(reward, [| Go; Stop |], minreward = -100., maxreward = 100.)
 
-experts.New [0..1]
+let expert2 =
+    RegretLearner<_, _>(reward, [| Go; Stop |], minreward = -100., maxreward = 100.)
+
+for _ in 0 .. 999999 do
+    let action1 = expert1.Sample()
+    let action2 = expert2.Sample()
+
+    expert1.Learn(observation = action1)
+    expert2.Learn(action2)
+
+expert1.NormalizedRegret
+
+expert1.ActionWeights
+
+expert1.Sample()
+expert1.LearnedActionWeights()
+expert2.LearnedActionWeights()
+
  
-experts.Forget()
- 
-for _ in 0..999999 do     
-    let c = experts.SampleActionOf 0 
-    let c2 = experts.SampleActionOf 1 
-     
-    experts.Learn(0,c)
-    experts.Learn(1,c2)
-    
-experts.[0].WeightedActions experts.Actions 
-experts.WeightedActionsFor 1 
-
-experts.WeightedActions()
-  
-

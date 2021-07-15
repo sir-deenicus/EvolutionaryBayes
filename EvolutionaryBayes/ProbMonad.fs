@@ -93,13 +93,9 @@ let inline logdivT T a b = exp((a - b) / T)
 /////
 
 ///A hack to allow joining independent distributions of different types while maintaining a likelihood
-type LikelihoodBuilder() = 
-    member d.MergeSources (p,q) = zip p q
-    member d.MergeSource3 (p,q,r) = zip3 p q r
-    member d.MergeSource4 (p,q,r,s) = zip4 p q r s
-    member d.Return v = always v
-    member d.ReturnFrom vs = vs
+type DistributionZipBuilder() = 
+    member d.MergeSources (p,q) = zip p q 
     member d.BindReturn(m:Distribution<_>, _) = m
 
 ///A hack to allow joining independent distributions of different types while maintaining a likelihood
-let ll = LikelihoodBuilder()
+let distzip = DistributionZipBuilder()

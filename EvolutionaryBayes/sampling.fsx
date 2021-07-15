@@ -105,13 +105,16 @@ prior (3.,5.)
 
 
 
-let prior2 = Distribution.logLikelihoods [normal 0. 10.; normal 0. 10.]
+let prior2 = Distribution.flatten [normal 0. 10.; normal 0. 10.]
 
 let prior3 = Distribution.zip (normal 0. 10.) (normal 0. 10.)
-
-let prior4 = ll {let! _  = normal 0. 10. 
-                 and! _ = normal 0. 10. 
-                 return()} 
+ 
+let prior4 =
+    distzip {
+        let! _ = normal 0. 10.
+        and! _ = normal 0. 10.
+        return ()
+    } 
 
 prior2.Sample()
 prior4.Sample()

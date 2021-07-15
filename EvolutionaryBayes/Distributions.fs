@@ -7,8 +7,8 @@ open System
 open MathNet.Numerics.LinearAlgebra.Double
 open Prelude.Common
 
-let boolToInt = function true -> 1 | false -> 0 
- 
+let boolToInt = function true -> 1 | false -> 0
+
 let normal m s =
     let n = Normal(m, s)
     { new Distribution<float> with
@@ -43,18 +43,24 @@ let bernoulliChoice choice1 choice2 p =
     let b = Bernoulli(p)
     { new Distribution<_> with
         member d.Sample() = if b.Sample() = 1 then choice1 else choice2
-        member d.LogLikelihood x = 
+        member d.LogLikelihood x =
             let c = match x with
-                    | v when v = choice1 -> 1 
-                    | v when v = choice2 -> 0 
+                    | v when v = choice1 -> 1
+                    | v when v = choice2 -> 0
                     | _ -> failwith "unrecognized choice"
-            b.ProbabilityLn c} 
+            b.ProbabilityLn c}
 
+let binomial (n,p) =
+    let b = Distributions.Binomial(p,n)
+    { new Distribution<_> with
+        member d.Sample() = b.Sample()
+        member d.LogLikelihood x = b.ProbabilityLn x}
+        
 let categorical (items : _ []) (pmf : float []) =
     let c = Categorical(pmf)
     let dictindex = Dict.ofSeq [|for i in 0..items.Length - 1 -> items.[i], i|]
     { new Distribution<_> with
-        member d.Sample() = items.[c.Sample()] 
+        member d.Sample() = items.[c.Sample()]
         member __.LogLikelihood x = c.ProbabilityLn (dictindex.[x]) }
 
 let categorical2 (ps : _ []) =
@@ -86,7 +92,7 @@ let uniform (items : _ []) =
         member d.Sample() = Array.sampleOne items
         member d.LogLikelihood x = if dictindex.Contains x then p else -infinity}
 
-let wishart degreesOfFreedom scale = 
+let wishart degreesOfFreedom scale =
     let w = Wishart(degreesOfFreedom, scale)
     { new Distribution<_> with
         member d.Sample() = w.Sample()
@@ -104,7 +110,7 @@ let multiVariateNormal cv (meanVector : float []) =
 let studentT dof loc scale =
     let s = StudentT(loc, scale, dof)
     { new Distribution<float> with
-        member d.Sample() = s.Sample() 
+        member d.Sample() = s.Sample()
         member d.LogLikelihood x = s.DensityLn x}
 
 let exponential rate =

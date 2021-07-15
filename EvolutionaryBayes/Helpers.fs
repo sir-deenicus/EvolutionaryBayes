@@ -16,7 +16,7 @@ type Distribution<'T when 'T: equality> with
         |> SampleSummarize.roundAndGroupSamplesWith (defaultArg groupWith id)
         |> Array.sortByDescending snd
     
-    member dist.Sample(n, ?scorer, ?groupWith, ?sum) =
+    member dist.DrawSamples(n, ?scorer, ?groupWith, ?sum) =
         let score = defaultArg scorer dist.Likelihood
 
         let aggr =
@@ -39,9 +39,7 @@ type Distribution<'T when 'T: equality> with
         |> Array.map (fun x -> x, score x)
         |> Array.sortByDescending snd
 
-    member dist.SampleAndNormalizeScore(n, scorer) =
-        dist.SampleAndScore(n, scorer)
+    member dist.SampleAndNormalizeScore(n, ?scorer) =
+        dist.SampleAndScore(n, ?scorer = scorer)
         |> Array.normalizeWeights
-
-    member dist.SampleAndNormalizeScore(n) =
-        dist.SampleAndScore(n) |> Array.normalizeWeights
+         

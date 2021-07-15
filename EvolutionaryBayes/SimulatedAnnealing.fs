@@ -37,8 +37,8 @@ type SimulatedAnnealer(ranges: _ [], loss, ?temperature, ?attenuate) =
         SimulatedAnnealer(
             ranges,
             loss,
-            defaultArg temperature 1000.,
-            defaultArg attenuate 0.95
+            ?temperature = temperature,
+            ?attenuate = attenuate
         )
 
     member __.OptimizeVector n v =
