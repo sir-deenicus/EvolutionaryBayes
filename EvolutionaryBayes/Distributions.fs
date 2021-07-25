@@ -51,7 +51,7 @@ let bernoulliChoice choice1 choice2 p =
             b.ProbabilityLn c}
 
 let binomial (n,p) =
-    let b = Distributions.Binomial(p,n)
+    let b = Binomial(p,n)
     { new Distribution<_> with
         member d.Sample() = b.Sample()
         member d.LogLikelihood x = b.ProbabilityLn x}
