@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>netcoreapp3.1;netstandard2.1</TargetFrameworks>
-    <Version>0.3.6</Version>
+    <Version>0.3.7</Version>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   </PropertyGroup>
 
@@ -14,6 +14,7 @@
     <Compile Include="ProbMonad.fs" />
     <Compile Include="Distributions.fs" />
     <Compile Include="Helpers.fs" />
+    <Compile Include="cfr.fs" />
     <Compile Include="MetropolisHastings.fs" />
     <Compile Include="ParticleFilters.fs" />
     <Compile Include="SimulatedAnnealing.fs" />

@@ -65,8 +65,22 @@ type RegretLearner<'actions, 'obs>
             expert.Weights.[i] <- 1./float possibleActions.Length
             expert.SumRegrets.[i] <- 0.
 
-type ContextualExpert(coarseGrainer, distancefn) =
-    let seen = Hashset() 
+type ContextualExpert<'a, 'actions, 'obs when 'a: equality>(distancefn,
+        reward, possibleActions : 'actions [], ?learningrate, 
+        ?minreward, ?maxreward, ?prevweights, ?learner) = 
 
-    let predict() = 
-        ()
+    let experts = Dict<'a,RegretLearner<'actions, 'obs>>()
+
+    member __.PredictWith(context) =
+        match experts.tryFind context with 
+        | Some expert -> expert
+        | None -> distancefn [|for KeyValue(c,_) in experts -> c|]
+        
+    member __.Learn(context, observation) =
+        match experts.tryFind context with 
+        | Some expert -> 
+            expert.Learn(observation)
+        | None ->
+            let expert = RegretLearner(reward, possibleActions, ?learningrate = learningrate, ?minreward = minreward, ?maxreward = maxreward, ?prevweights = prevweights, ?learner = learner)
+            experts.Add(context, expert)
+        

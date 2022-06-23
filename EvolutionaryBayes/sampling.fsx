@@ -154,4 +154,40 @@ let r = m.EvolveSequence(generations = 10)
 
 r.SampleAndGroup(1000,round 2)
 
+let pop = dist {
+    let! m = normal 75. 5.
+    let! iq = normal m 15.
+    return m, iq
+}
+ 
+let popl m = distzip {
+    let! _ = normal 75. 10.
+    and! _ = normal m 15.
+    return ()
+}
 
+open Prelude   
+
+let likiq =
+    observe
+        (fun (m, iq) ->
+            (popl m).LogLikelihood(m, iq)
+            + log ((logisticRange 94. 106. iq)))
+        (fun _ iq -> log ((logisticRange 94. 106. iq)))
+        []
+
+pop.SampleN(100000)
+|> SampleSummarize.roundAndGroupSamplesWith (fst >> round 0)
+|> Array.sortBy fst
+|> TextHistogram.histogram 20
+   
+MetropolisHastings.sample 1. 1. likiq (fun (m, iq) ->
+    if random.NextDouble() < 0.5 then
+        Normal(m, 1.).Sample(), iq
+    else m, Normal(iq, 1.).Sample()) 300_000 (pop.Sample())
+|> List.map snd
+|> SampleSummarize.roundAndGroupSamplesWith (round 0)
+|> Array.sortBy fst
+|> TextHistogram.histogram 20 
+ 
+  
