@@ -55,7 +55,9 @@ let basicLookUp nummoves (nodeMap:Dict<_,_>) (infoset:string) =
         n
     | Some n -> n
 
-let rec cfr d p0 p1 reward lookup adjustState getActionsMask stringifyContext (nodeMap: Dict<_, _>) (contexts: 'a []) (actions:_[])  (history: string) =
+type ActionMask<'contexts> = int -> 'contexts [] -> string -> bool[]
+
+let rec cfr d p0 p1 reward lookup adjustState (getActionsMask: ActionMask<'a>) (stringifyContext:_->string) (nodeMap: Dict<_, _>) (contexts: 'a []) (actions:_[])  (history: string) =
     let player = d % 2
     
     let actionsMask : _ [] = getActionsMask d contexts history
