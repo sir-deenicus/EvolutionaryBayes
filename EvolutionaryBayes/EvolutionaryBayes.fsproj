@@ -16,10 +16,12 @@
     <Compile Include="Distributions.fs" />
     <Compile Include="Helpers.fs" />
     <Compile Include="cfr.fs" />
+    <Compile Include="MutationKernels.fs" />
     <Compile Include="MetropolisHastings.fs" />
     <Compile Include="ParticleFilters.fs" />
     <Compile Include="SimulatedAnnealing.fs" />
     <None Include="sampling.fsx" />
+    <None Include="MutationKernels.md" />
   </ItemGroup>
 
   <ItemGroup>
