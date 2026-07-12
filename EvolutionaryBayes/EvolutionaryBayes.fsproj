@@ -7,14 +7,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="AssemblyInfo.fs" />
     <None Include="kuhn-poker.fsx" />
     <None Include="evosim.fsx" />
     <None Include="minregret.fsx" />
     <Compile Include="RegretMinimization.fs" />
-    <None Include="NotesOnPriors.fsx" />
-    <Compile Include="ProbMonad.fs" />
+    <None Include="NotesOnPriors.fsx" /> 
     <Compile Include="Distributions.fs" />
     <Compile Include="Helpers.fs" />
+    <Compile Include="CFRCore.fs" />
     <Compile Include="cfr.fs" />
     <Compile Include="MutationKernels.fs" />
     <Compile Include="MetropolisHastings.fs" />
@@ -22,6 +23,7 @@
     <Compile Include="SimulatedAnnealing.fs" />
     <None Include="sampling.fsx" />
     <None Include="MutationKernels.md" />
+    <None Include="LineageStates.md" />
   </ItemGroup>
 
   <ItemGroup>

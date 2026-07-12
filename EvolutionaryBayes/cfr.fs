@@ -14,9 +14,10 @@ let newStrategyNode n =
     { regretSum = Array.create n 0.
       strategySum = Array.create n 0. } 
 
-//TODO: Are both the sampled and exhaustive implementations of CFR+?
+//TODO: Ensure both the sampled and exhaustive implementations of CFR+?
 //TODO: How can we replace the dictionary with function approximation? My current thoughts are that if we use an object that
 //can be keyed by history such as a small transformer or indRNN, we'd need to find an updating scheme or loss that recovered regret convergence.
+
 
 // Compute linear averaging weight for iteration (1-based) with optional burn-in.
 let inline avgWeight (iter:int) (burnIn:int) =
@@ -59,12 +60,12 @@ let inline clipRegretsPlus (mask: bool[]) (regrets: double[]) =
 
 let rec cfr iter burnIn d p0 p1 reward lookup adjustState (getActionsMask: ActionMask<'a>) (stringifyContext:_->string) (nodeMap: Dict<_, _>) (contexts: 'a []) (actions:_[])  (history: string) =
     let player = d % 2
-    let actionsMask : _ [] = getActionsMask d contexts history
-    let nummoves = actions.Length
-    ensureLength "getActionsMask" nummoves actionsMask.Length
     match reward contexts player history with
     | Some r -> r
     | None ->
+        let actionsMask : _ [] = getActionsMask d contexts history
+        let nummoves = actions.Length
+        ensureLength "getActionsMask" nummoves actionsMask.Length
         // Delimiter in infoset to avoid collisions
         let infoset = $"{stringifyContext contexts.[player]}|{history}"
         let node = lookup nummoves nodeMap infoset
@@ -167,3 +168,18 @@ let rec cfrSampled
                 else (p0, p1 * chosenProb)
             -cfrSampled rnd targetPlayer iter burnIn (d + 1) nextP0 nextP1
                 reward lookup adjustState getActionsMask stringifyContext nodeMap contexts actions h'
+
+let cfrSampledIteration
+    (rnd: Random) (iter: int) (burnIn: int)
+    reward lookup adjustState (getActionsMask: ActionMask<'a>) stringifyContext
+    (nodeMap: Dict<_, _>) (contexts: 'a[]) (actions: 'b[]) (history: string) =
+
+    let player0Util =
+        cfrSampled rnd 0 iter burnIn 0 1. 1.
+            reward lookup adjustState getActionsMask stringifyContext nodeMap contexts actions history
+
+    let player1Util =
+        cfrSampled rnd 1 iter burnIn 0 1. 1.
+            reward lookup adjustState getActionsMask stringifyContext nodeMap contexts actions history
+
+    player0Util, player1Util

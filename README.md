@@ -109,6 +109,9 @@ However, one area where this library can be useful is doing lightweight probabil
 
 # Regret Learning
 
+For the repository's two-player game solver, see
+[Counterfactual Regret Minimization in `cfr.fs`](CFR.md).
+
 
 
 In addition to bayesian methods, the library supports a multiplicative weights update algorithm—which are related to evolution—for regret minimization based learning. There can be experts per context, placing 

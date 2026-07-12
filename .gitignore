@@ -260,3 +260,4 @@ paket-files/
 __pycache__/
 *.pyc
 EvolutionaryBayes/changes.txt
+changes.txt

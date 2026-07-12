@@ -27,6 +27,25 @@ let adjustState _ _ action (history:string) =
  
 let getActionMask _ _ _ = [|true; true|]  
 
+let basicLookUp n (nodeMap: Dict<string, StrategyNode>) infoset =
+    match nodeMap.TryGetValue infoset with
+    | true, node -> node
+    | false, _ ->
+        let node = newStrategyNode n
+        nodeMap.[infoset] <- node
+        node
+
+let getAvgStrategyForced (node: StrategyNode) =
+    let mask = Array.create node.strategySum.Length true
+    let strategy = getStrategyMasked mask node.regretSum
+    let total = Array.sum node.strategySum
+    let avg =
+        if total <= 0. then
+            Array.create node.strategySum.Length (1. / float node.strategySum.Length)
+        else
+            node.strategySum |> Array.map (fun v -> v / total)
+    strategy, avg  
+
 
 let iterations = 1000000
   
@@ -39,7 +58,7 @@ let utils = ResizeArray<float>()
 
 for i in 1..iterations do
     let playercards = Array.shuffle cards1 |> Array.take 2
-    let util = cfr 0 1. 1. reward basicLookUp adjustState getActionMask string nodeMap playercards [| "B"; "C" |] ""
+    let util = cfr i 0 0 1. 1. reward basicLookUp adjustState getActionMask string nodeMap playercards [| "B"; "C" |] ""
     
     utils.Add(util) 
  

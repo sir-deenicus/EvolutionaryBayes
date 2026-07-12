@@ -5,6 +5,10 @@ VisualStudioVersion = 16.0.31112.23
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "EvolutionaryBayes", "EvolutionaryBayes\EvolutionaryBayes.fsproj", "{7083D2D3-63C5-4E57-9876-1B1859D191C6}"
 EndProject
+Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "EvolutionaryBayes.CFR.Tests", "EvolutionaryBayes.CFR.Tests\EvolutionaryBayes.CFR.Tests.fsproj", "{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}"
+EndProject
+Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "EvolutionaryBayes.CFR.Benchmarks", "EvolutionaryBayes.CFR.Benchmarks\EvolutionaryBayes.CFR.Benchmarks.fsproj", "{FB41990F-7BB8-4320-965F-159B4E40A18D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +25,22 @@ Global
 		{7083D2D3-63C5-4E57-9876-1B1859D191C6}.Release|Any CPU.Build.0 = Release|Any CPU
 		{7083D2D3-63C5-4E57-9876-1B1859D191C6}.Release|x64.ActiveCfg = Release|Any CPU
 		{7083D2D3-63C5-4E57-9876-1B1859D191C6}.Release|x64.Build.0 = Release|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Debug|x64.Build.0 = Debug|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Release|x64.ActiveCfg = Release|Any CPU
+		{9A724D7A-48F3-4ED0-B1D6-7CBB697D7E25}.Release|x64.Build.0 = Release|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Debug|x64.Build.0 = Debug|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Release|x64.ActiveCfg = Release|Any CPU
+		{FB41990F-7BB8-4320-965F-159B4E40A18D}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
