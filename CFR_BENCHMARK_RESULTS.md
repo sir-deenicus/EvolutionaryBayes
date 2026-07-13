@@ -116,3 +116,126 @@ instruction count.
 | 8 | 2,500,000 | 713.999 | 3,501,408 | 112,045,053 | 0 |
 | 16 | 1,250,000 | 636.009 | 1,965,382 | 125,784,443 | 0 |
 | 32 | 625,000 | 611.603 | 1,021,905 | 130,803,870 | 0 |
+
+### Stage 3 - exhaustive two-player general-sum solver
+
+- Source revision: `385bfe3` plus the Stage 3 working-tree implementation
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+
+The representative fixture is a complete perfect-information tree with four
+legal local actions and terminal depth five. It has 341 information sets,
+1,364 stored legal action slots, and 1,365 visited nodes per target traversal.
+Each sample measures 500 iterations after warm-up. Stage 3 performs both target
+traversals, or 1,365,000 node visits per sample; legacy performs one traversal,
+or 682,500 visits. Seven runs were interleaved in alternating order, and the
+table reports medians. Throughput counts every visited node, so the comparison
+does not hide Stage 3's correct two-target update schedule.
+
+| Solver | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: |
+| Legacy exhaustive | 205.774 | 3,316,737 | 76,256,000 |
+| Stage 3 CFR | 85.710 | 15,925,852 | 0 |
+
+Stage 3 is approximately $4.80\times$ faster by visited-node throughput and
+uses about $0.42\times$ the elapsed time despite performing twice as many node
+visits. As noted in the environment qualification, the machine was throttled
+and busy, so the large same-session interleaved difference is meaningful while
+small absolute timing differences would not be.
+
+For this fixture, exact managed-array payload is:
+
+| Component | Payload bytes |
+| --- | ---: |
+| Persistent regrets + strategy sums | 21,824 |
+| Information-set metadata | 4,092 |
+| Depth strategy + utility scratch | 320 |
+| Average-strategy epochs | 1,364 |
+| Exhaustive regret deltas | 10,912 |
+| Touched rows + touched epochs | 2,728 |
+| Total | 41,240 |
+
+Thus the only numerical workspace beyond the two persistent tables is the
+$8M$-byte regret-delta array and the $16DA$-byte depth scratch for configured
+depth $D$ and maximum action count $A$. Integer epoch and touched-row arrays
+are shown separately. The warmed value-state allocation test also measured
+zero bytes over 10,000 exhaustive iterations.
+
+### Stage 3a - exhaustive hot-path optimization
+
+- Source revision: `385bfe3` plus the Stage 3 and Stage 3a working-tree implementation
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+
+The representative fixture and warm-up are unchanged from Stage 3: four legal
+actions, terminal depth five, 341 information sets, 1,364 legal slots, and
+1,365 nodes per complete tree. Each sample measures 500 iterations. Seven runs
+were interleaved in alternating order and the table reports medians. The
+two-target reference and the one-pass specialization start from separate,
+identically initialized tables.
+
+| Solver | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Stage 3 two target passes | 1,365,000 | 98.644 | 13,837,568 | 0 |
+| Stage 3a one pass | 682,500 | 97.402 | 7,007,014 | 0 |
+
+The specialization halves logical tree visits and reduced median elapsed time
+by $1.26\%$ in the final conservative run. Two earlier same-session
+interleaved runs reduced elapsed time by $19.7\%$ and $8.5\%$. The large spread
+is consistent with the machine qualification above, so the final smaller gain
+is used for the exit gate and no peak-performance claim is made. Node
+throughput is reported for transparency but is not directly comparable between
+the rows: a one-pass node propagates both players' utilities.
+
+The fused regret boundary was measured separately over 341 rows, 1,364 slots,
+and 20,000 boundaries. Both variants restored the same deltas for the next
+boundary and seven runs were interleaved.
+
+| Boundary variant | Median elapsed ms | Median allocated bytes |
+| --- | ---: | ---: |
+| Apply, then clear touched rows | 296.555 | 0 |
+| Fused apply-and-clear | 291.498 | 0 |
+
+The fused loop reduced this final median by $1.71\%$ and removes the separate
+slot-clearing pass. Earlier sessions measured a $21.1\%$ improvement and a
+$0.14\%$ improvement; none showed a regression.
+
+An unchecked touched-row helper was also tested separately and rejected. In
+two interleaved sessions, checked versus unchecked medians were respectively
+245.044 versus 343.229 ms and 224.193 versus 383.904 ms across 341 validated
+IDs and 100,000 epochs. The unchecked helper was removed, leaving the simpler
+and faster checked implementation.
+
+Stage 3a added no persistent or workspace arrays, so the exact fixture payload
+remains 41,240 bytes. The warmed allocation test again measured zero bytes over
+10,000 exhaustive iterations.
+
+#### Same-day Stage 3a rerun
+
+The unchanged Release binaries were rerun under the same documented constrained
+environment. This is an additional interleaved seven-run median, not a
+replacement for the conservative result above.
+
+| Solver | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Stage 3 two target passes | 1,365,000 | 113.248 | 12,053,214 | 0 |
+| Stage 3a one pass | 682,500 | 84.111 | 8,114,326 | 0 |
+
+The one-pass traversal reduced elapsed time by $25.73\%$ in this session. The
+separately measured fused boundary was also faster:
+
+| Boundary variant | Median elapsed ms | Median allocated bytes |
+| --- | ---: | ---: |
+| Apply, then clear touched rows | 291.472 | 0 |
+| Fused apply-and-clear | 287.678 | 0 |
+
+That is a $1.30\%$ boundary reduction. These results strengthen the evidence
+for retaining the one-pass traversal, while the variation between sessions
+continues to justify reporting all interleaved medians rather than selecting a
+single best run.

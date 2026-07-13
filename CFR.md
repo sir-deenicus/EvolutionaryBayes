@@ -588,9 +588,12 @@ For correct use:
 ## 16. Future work and improvements
 
 The redesign is a small, allocation-free CFR/MCCFR core rather than a large
-framework. Stages 1 and 2 are implemented: the legacy traversals now have a
-reproducible safety net, and an internal flat scalar storage/kernel layer exists
-beside them. Later traversal stages will support $N$-player, general-sum games, while treating
+framework. Stages 1 through 3a are implemented: the legacy traversals have a
+reproducible safety net, an internal flat scalar storage/kernel layer exists
+beside them, and the new exhaustive two-player general-sum CFR/CFR+ solver is
+the deterministic oracle for later sampled modes. Vanilla two-player CFR now
+returns both utilities from one exhaustive pass, while CFR+ retains its
+alternating target passes. Later traversal stages will support $N$-player, general-sum games, while treating
 two-player general-sum games as the primary optimized path. No special storage,
 solver, or scheduling support will be added for graphical, polymatrix, or
 hypergraphical games.
@@ -610,14 +613,16 @@ stage requires an unfinished public mode to remain exposed.
 | --- | --- | --- |
 | 1 | Correctness and performance baseline — completed 2026-07-12 | The current solver is characterized by deterministic tests, analytical fixtures, and repeatable allocation and throughput measurements. |
 | 2 | Flat scalar core — completed 2026-07-12 | Dense player-scoped information sets, packed SoA tables, scalar kernels, and reusable workspaces exist beside the unchanged public solver. |
-| 3 | Exhaustive two-player solver | An internal target-utility, two-player general-sum implementation of `CFR` and `CFRPlus` is correct, allocation-free after warm-up, and becomes the oracle for small games. |
+| 3 | Exhaustive two-player solver - completed 2026-07-12 | An internal target-utility, two-player general-sum implementation of `CFR` and `CFRPlus` is correct, allocation-free after warm-up, and is the oracle for small games. |
+| 3a | Immediate exhaustive hot-path optimization - completed 2026-07-12 | Vanilla two-player CFR returns both utilities from one traversal and exhaustive regret application clears deltas in the same slot pass. A proposed unchecked touch helper was benchmarked and rejected. |
 | 4 | Sampled two-player solver | `MCCFR` and `MCCFRPlus` share the same tables and kernels; all four modes are then exposed through one public API. |
 | 5 | $N$-player and chance completion | Every mode supports finite sequential $N$-player general-sum games and explicit chance nodes without slowing the selected two-player path. |
 | 6 | Production cutover | The legacy recursive implementation is removed from production, the minimal API is frozen, and memory, allocation, convergence, and migration checks pass. |
 | 7 | Profile-guided single-thread optimization | Small-action scalar fast paths and, only where profitable, isolated SIMD kernels improve measured throughput without changing the design. |
 | 8 | Optional deterministic parallel batches | Parallel MCCFR is added only if representative workloads justify its complexity and it passes reproducibility and memory gates. |
 
-Stages 1 through 6 define the required production core. Stage 7 may legitimately
+Stage 3a passed before Stage 4 began. Stages 1 through 6 define the required
+production core. Stage 7 may legitimately
 end with scalar code if SIMD does not win. Stage 8 may legitimately end with a
 documented no-go result; parallel execution is not required to consider the
 core complete.
@@ -628,35 +633,40 @@ The current implementation infers the player from `depth % 2` and changes
 utility perspective by negating recursive results. Those operations restrict it
 to two-player, alternating, zero-sum games.
 
-The replacement traversal will instead receive the acting player from the game
-state and always evaluate utility for one designated target player:
+The exhaustive solver receives the acting player from the game state
+and always evaluates utility for one designated target player. Its minimal
+internal contract is:
 
 ```fsharp
-currentPlayer    : 'state -> int
-terminalUtility  : targetPlayer:int -> 'state -> ValueOption<double>
-infoSetId        : 'state -> int
-actionCount      : 'state -> int
-nextState        : 'state -> localAction:int -> 'state
-chanceProbability: 'state -> localAction:int -> double
+type IExhaustiveGame<'State> =
+    abstract TryGetTerminalUtility:
+        state:'State * targetPlayer:int * utility:byref<double> -> bool
+    abstract Actor: state:'State -> int
+    abstract InformationSetId: state:'State -> int
+    abstract ActionCount: state:'State -> int
+    abstract NextState: state:'State * localAction:int -> 'State
+    abstract ChanceProbability: state:'State * localAction:int -> double
 ```
 
-`currentPlayer` returns a player in $0,\ldots,N-1$ or one reserved integer for
-chance. `infoSetId` is read only at player nodes. Every integer in
+`Actor` currently returns player zero, player one, or the reserved
+`ChanceActor = -1`; every other value is rejected. Stage 5 will generalize the
+same rule to a player in $0,\ldots,N-1$ or the reserved integer for chance.
+`InformationSetId` is read only at player nodes. Every integer in
 `0 .. actionCount state - 1` is a legal local action, so the core does not need
 to allocate or scan a Boolean action mask. At a chance node,
 `chanceProbability` supplies a normalized fixed distribution; chance has no
 regret or average-strategy row.
 
-Conceptually, the recursive function becomes
+The recursive function is conceptually
 
 ```fsharp
 traverse targetPlayer state
 ```
 
 and returns that target player's utility at every depth. Child values are
-propagated directly rather than negated. This supports:
+propagated directly rather than negated. Stage 3 supports:
 
-- any number of players;
+- two players now, with the same target-utility structure intended for $N$ players in Stage 5;
 - general-sum terminal utilities;
 - consecutive turns by the same player;
 - arbitrary player order determined by the game state.
@@ -665,10 +675,12 @@ Information-set IDs must be unique across players. Private observations,
 public history, and player identity are the game's responsibility when mapping
 a state to a dense integer ID.
 
-For an $N$-player game, one external-sampling traversal is performed for each
-target player whose regrets are being updated. The two-player path therefore
-performs exactly two traversals and can use a specialized terminal-payoff
-accessor without allocating an $N$-element utility vector.
+For an eventual $N$-player game, one traversal is performed for each target
+player whose regrets are being updated. The optimized vanilla two-player CFR
+path instead returns both utilities in one value tuple and updates the acting
+player's regret while retaining the deferred, simultaneous application
+boundary. CFR+, sampled modes, and the $N$-player fallback retain target-player
+traversal semantics.
 
 Supporting general-sum and multiplayer games does not extend the two-player
 zero-sum equilibrium theorem. The solver will minimize counterfactual regret,
@@ -684,10 +696,16 @@ The optimized production implementation should contain only:
 2. one reusable traversal workspace;
 3. allocation-free regret matching;
 4. allocation-free legal-action sampling;
-5. one target-player exhaustive traversal;
+5. one target-player exhaustive traversal (implemented in Stage 3);
 6. one target-player external-sampling traversal;
 7. a small iteration function that invokes the selected traversal for each
    player.
+
+The production core may additionally contain one short, two-player-only
+vanilla CFR traversal. This is a specialization of item 5, not a second table
+model or a general utility-vector framework. It returns
+`struct (utility0, utility1)` and reuses the same packed tables, regret-delta
+buffer, strategy scratch, utility scratch, and update kernels.
 
 Exhaustive CFR will remain a supported public option for small games, not only
 a test implementation. The public API should expose the four intended
@@ -761,8 +779,9 @@ type PackedTable =
 them by ID, validates ownership and positive action counts, and constructs all
 offsets. `PackedTable.ofMetadata` is the lower-level checked boundary for
 already constructed metadata; it rejects gaps, overlaps, and non-contiguous
-rows. Training code receives the validated arrays and does not repeat these
-checks in its hot loops.
+rows. Scalar kernels receive these validated slices without rescanning
+metadata. The Stage 3 traversal still checks that each dynamic game state has a
+valid actor and information-set ID and agrees with the row's owner and length.
 
 For information set $I$ and local action slot $a$, the numerical index is
 
@@ -811,7 +830,10 @@ histories map to it.
 The exhaustive workspace additionally owns one reusable `double[M]` regret-
 delta array plus touched-row bookkeeping. It keeps the strategy profile fixed
 while all histories in an information set contribute their regret, then applies
-and clears only the rows touched by that target-player pass.
+and clears only the rows touched by the relevant update boundary. Vanilla CFR
+applies every touched row after its one complete two-utility traversal; CFR+
+applies and clips after each complete target pass. Application writes the new
+regret and zeroes the corresponding delta in the same slot loop.
 
 The sampled workspace instead owns `SampledActions` and `SampleEpochs`, each
 indexed by information-set ID. `SampledActions` caches the non-target action
@@ -1192,12 +1214,23 @@ The separate Stage 2 memory, allocation, and scalar-throughput results are in
 their allocation benchmark is zero after warm-up, and the legacy public solver
 still produces the Stage 1 baseline results.
 
-#### Stage 3: implement exhaustive two-player general-sum CFR and CFR+
+#### Stage 3: implement exhaustive two-player general-sum CFR and CFR+ - completed 2026-07-12
 
 **Milestone outcome.** A complete two-player exhaustive solver exists for small
 games. It supports both signed-regret CFR and alternating-update CFR+, explicit
 chance, consecutive turns, and two independent terminal utilities. It becomes
 the deterministic correctness oracle for later stages.
+
+**Implemented result.** `CFRCore.fs` now contains the generic internal
+`IExhaustiveGame<'State>` contract, reserved `ChanceActor`, and
+`ExhaustiveSolver<'State,'Game>`. The solver uses direct target utilities,
+explicit actors and chance, legal local action slots, reusable depth slices,
+epoch-guarded average accumulation, and the Stage 2 packed tables. CFR defers
+both players' aggregate regret deltas to a simultaneous boundary; CFR+ applies
+and clips one complete target pass before traversing the other player. The
+legacy public API remains unchanged until Stage 4 supplies the sampled modes.
+Correctness, allocation, memory, and interleaved throughput evidence is in
+[`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
 **Implementation work.**
 
@@ -1206,9 +1239,9 @@ the deterministic correctness oracle for later stages.
    ID, local action count, state transition, and chance probability. Terminal
    detection occurs before any actor or information-set lookup.
 2. Reserve one actor integer for chance and reject every other actor outside
-   $0,\ldots,N-1$. At player nodes, verify in checked builds that
-   `InfoSetMeta.Owner` matches the actor and the row length matches the state's
-   action count.
+   $0,\ldots,N-1$. At player nodes, verify that `InfoSetMeta.Owner` matches the
+   actor and the row length matches the state's action count. Stage 3 retains
+   these contract checks in Release builds.
 3. Replace depth parity and recursive negation with
    `traverse targetPlayer state ownReach externalReach`. A terminal returns
    $u_{\text{target}}(z)$ directly. For a target action $a$,
@@ -1275,6 +1308,135 @@ the deterministic correctness oracle for later stages.
 beats or matches the legacy node throughput on the representative small-game
 baseline, and its only per-solver numerical memory beyond `Regrets` and
 `StrategySums` is the documented exhaustive delta workspace and depth scratch.
+
+#### Stage 3a: optimize the exhaustive hot path - completed 2026-07-12
+
+**Milestone outcome.** Two-player vanilla CFR visits the exhaustive game tree
+once per iteration rather than once per target player. The optimization remains
+strictly two-player-specific. The target-player traversal stays intact as the
+simple fallback for $N$-player CFR and as the required basis for CFR+, MCCFR,
+and MCCFR+. Independently, every exhaustive mode applies and clears touched
+regret deltas in one pass. The proposed unchecked touched-row registration did
+not pass its benchmark gate and is not part of the implementation.
+
+**Implemented result.** `ExhaustiveSolver` selects the short
+`traverseTwoPlayerCfr` recursion for vanilla CFR. It carries player-zero,
+player-one, and chance reach as scalars, returns `struct (utility0, utility1)`,
+stores only the acting player's child utilities in the existing depth scratch,
+and applies all regret deltas only after the traversal. CFR+ continues to use
+two alternating target-player passes. `applyRegretDeltaAndClearUnchecked`
+combines application and clearing without changing table or workspace size.
+The retained target-pair path is also the direct correctness oracle used by
+the tests and benchmark.
+
+**Correctness basis.** The specialized recursion returns both players' values:
+
+$$
+T(s)=\operatorname{struct}(v_0(s),v_1(s)).
+$$
+
+At a terminal $z$ it requests both independent utilities,
+
+$$
+T(z)=\operatorname{struct}(u_0(z),u_1(z)),
+$$
+
+so general-sum behavior does not use negation. At a player node owned by $i$,
+the same pre-iteration strategy produces both node values,
+
+$$
+v_j(I)=\sum_{a\in A(I)}\sigma_i(I,a)v_j(I,a),
+\qquad j\in\{0,1\},
+$$
+
+and only the acting player's counterfactual regret is accumulated:
+
+$$
+\Delta R_i(I,a)
+\mathrel{+}=
+\pi_{-i}(I)\left(v_i(I,a)-v_i(I)\right).
+$$
+
+Because no regret row is applied until the complete traversal finishes, every
+information set observes the unchanged pre-iteration profile and vanilla CFR's
+simultaneous-update semantics are preserved.
+
+**Implemented work.**
+
+1. Added one short `traverseTwoPlayerCfr` recursion returning
+   `struct (double * double)`. It carries player-zero reach, player-one reach,
+   and chance reach as three scalar doubles.
+2. At a player node, both node values accumulate in scalar locals. The solver reuses the
+   existing depth utility slice for only the acting player's per-action values,
+   which form that row's regret delta after enumeration. No $N$-utility vector,
+   additional $M$-sized table, or additional depth utility array was added.
+3. The acting player's mandatory average strategy accumulates once per
+   information set using its own reach and the existing epoch guard.
+4. Chance nodes enumerate the fixed distribution once, weight both returned
+   utilities by the same chance probability, and multiply chance reach for
+   descendant counterfactual updates.
+5. The solver selects the specialization only for `CFR` with exactly two players.
+   `CFRPlus` remains on two alternating target passes. When Stage 5 enables more than
+   two players, vanilla CFR uses one target pass per player rather than growing
+   a dynamic utility-vector hot path.
+6. Regret application and delta clearing are fused for every exhaustive mode. For
+   each touched action slot perform
+
+   $$
+   R_j\leftarrow
+   \begin{cases}
+   R_j+\Delta_j, & \text{signed mode},\\
+   \max(0,R_j+\Delta_j), & \text{plus mode},
+   \end{cases}
+   \qquad
+   \Delta_j\leftarrow0,
+   $$
+
+   in one loop, then the touched-row count resets. Rows are no longer revisited
+   solely to call `Array.Clear`.
+7. The planned unchecked touched-row helper was implemented and measured, then
+   removed because it was materially slower than the existing checked helper
+   in two interleaved benchmark sessions. The simpler checked helper remains.
+
+**Verification performed.**
+
+- Compared one-pass and existing two-pass CFR from identical tables on every
+  Stage 3 analytical fixture. Root utilities, regret deltas, and strategy sums
+  agree within the existing floating-point tolerance.
+- Retained exact tests for general-sum terminal utilities, chance reach,
+  consecutive turns, repeated information sets, and matching-pennies
+  convergence.
+- Confirmed that CFR+ behavior and its two-traversal count are unchanged.
+- Confirmed zero steady-state allocation for a value-type state and no increase
+  in persistent or workspace array payload.
+- Compared fused apply-and-clear against the existing apply-then-clear sequence
+  for signed and clipped rows, including repeated-information-set aggregates;
+  every touched delta is zero immediately after the boundary.
+- Retained deduplication, visit-order, and rejection tests on checked touched-row
+  registration. The discarded unchecked variant is recorded as a benchmarked
+  no-go rather than retained as dead optimization code.
+- Added an interleaved repeated-median benchmark comparing the completed Stage 3
+  two-pass CFR implementation with the single-pass specialization on the same
+  four-action, depth-five fixture. Record node visits as well as elapsed time.
+  Record the fused-boundary result and the rejected unchecked-touch experiment
+  as separate sub-results within the Stage 3a benchmark section so their
+  effects are not attributed silently to the single-pass traversal.
+
+**Exit result.** The specialization matches the two-pass oracle on all
+correctness fixtures, reduces two-player vanilla CFR visits from two complete
+trees to one, allocates zero steady-state bytes, adds no solver-sized storage,
+and improves median elapsed time on the representative workload. Fused clearing
+matches its scalar reference and did not regress median throughput. The
+unchecked touching path did not beat the checked path and was removed.
+
+**Recorded later optimizations.** Repeated dynamic game-contract validation is
+not removed in Stage 3a because doing so changes failure behavior. Stage 7 must
+measure actor, action-count, information-set ownership/length, terminal, and
+chance-normalization checks before considering one construction-time selection
+between checked and trusted traversal. The hot loop must not branch on that
+selection, the checked path must remain available, and the trusted path is kept
+only if its end-to-end benefit clears the Stage 7 merge gate. Small-action
+unrolling, generic-loop tuning, and SIMD also remain explicitly in Stage 7.
 
 #### Stage 4: add two-player MCCFR and MCCFR+
 
@@ -1482,6 +1644,9 @@ completes this milestone.
    total solver time, not by microbenchmark attractiveness.
 2. Optimize in this order:
 
+   - measure repeated game-contract validation; only if material, consider a
+     checked/trusted traversal selected once outside the hot loop, with checked
+     behavior retained for untrusted games;
    - remove remaining bounds checks and non-inlined helper overhead where the
      generated code demonstrates a cost;
    - add explicit two-action and three-action scalar kernels if they improve the
@@ -1649,6 +1814,38 @@ algorithm.
   explicitly released before measuring. The discarded probe produced invalid
   zero retained-byte results and is not part of the benchmark history.
 
+### 2026-07-12 - Stage 3: exhaustive two-player general-sum CFR and CFR+
+
+- Added the minimal generic game contract and internal exhaustive solver for
+  two-player general-sum games. Terminal detection precedes actor and
+  information-set lookup; terminal utilities are requested independently for
+  each target player; explicit actors support consecutive turns; and exact
+  chance enumeration contributes chance probability to external reach.
+- Implemented simultaneous signed-regret CFR and alternating CFR+. Repeated
+  histories accumulate into the dense exhaustive delta workspace and each row
+  is applied only at its mode's update boundary, so CFR+ clips the complete
+  aggregate once. Mandatory average strategies use target own reach, mode
+  weight, and a per-pass epoch guard.
+- Added analytical tests for one-iteration general-sum values and deltas,
+  independent terminal payoffs $(3,1)$, chance-weighted counterfactual reach,
+  repeated-information-set clipping, consecutive turns, invalid metadata and
+  mode rejection, matching-pennies convergence, nonnegative CFR+ regrets, and
+  value-state steady-state allocation. The Release solution built with zero
+  warnings and all 42 tests passed.
+- Added a distinct Stage 3 benchmark with seven interleaved runs and medians.
+  On the constrained machine, the new solver measured 15,925,852 nodes/s and
+  zero steady-state bytes versus 3,316,737 nodes/s and 76,256,000 bytes for the
+  legacy traversal on the representative four-action, depth-five workload.
+- Memory remained within the planned core: beyond the two persistent packed
+  arrays, the exhaustive solver owns only depth-local strategy/utility scratch,
+  one dense regret-delta array, and integer epoch/touched-row bookkeeping. No
+  current-strategy table, action mask, sampled workspace, dictionary, or
+  traversal-local collection was added.
+- Deviation: state/metadata contract checks remain active in Release rather
+  than being compiled out. Their benchmarked cost still clears the throughput
+  gate by a wide margin, and retaining explicit failures is simpler and safer;
+  Stage 7 may reconsider only if profiling shows a material win.
+
 ### 2026-07-12 — Benchmark environment qualification
 
 - Recorded that the benchmark machine was operating with approximately 65%
@@ -1660,3 +1857,42 @@ algorithm.
 - Future performance gates require comparable load conditions, interleaved
   before/after samples, and median results, with a clean-machine rerun appended
   under a new date rather than replacing this run.
+
+### 2026-07-12 - Stage 3a: exhaustive hot-path optimization
+
+- Added a two-player-only vanilla CFR recursion that returns both independent
+  utilities in a struct tuple, carries both player reaches and chance reach as
+  scalars, updates only the acting player's regret, and preserves simultaneous
+  application. CFR+ remains on two alternating target-player traversals.
+- Reused the existing strategy and acting-player utility scratch; no utility
+  vector, second depth buffer, current-strategy table, or other solver-sized
+  storage was added. Fused regret application and delta clearing now write and
+  zero each touched slot in one loop.
+- Added lockstep tests against the retained two-target oracle across the
+  general-sum matrix, burn-in, chance/repeated-information-set, and
+  consecutive-turn fixtures. Added traversal-count, fused-boundary, touched-row
+  validation, and allocation checks. The Release solution built with zero
+  warnings and all 45 tests passed; 10,000 warmed iterations allocated zero
+  bytes.
+- On the four-action, depth-five benchmark, the retained two-target reference
+  visited 1,365,000 nodes in 98.644 ms and the one-pass path visited 682,500 in
+  97.402 ms. The fused boundary measured 291.498 ms versus 296.555 ms for
+  apply-then-clear. Both retained paths allocated zero bytes and exact managed
+  array payload remained 41,240 bytes for the fixture.
+- Deviation: the planned unchecked touched-row helper was removed after two
+  interleaved benchmark sessions showed large regressions (245.044 versus
+  343.229 ms and 224.193 versus 383.904 ms, checked versus unchecked). Keeping
+  the checked helper is both faster on this runtime and simpler. Timing gains
+  varied materially under the documented throttling and background load, so
+  the final conservative interleaved median is recorded rather than the best
+  observed run.
+
+### 2026-07-12 - Stage 3a benchmark rerun addendum
+
+- Reran the unchanged Release implementation with seven interleaved repetitions.
+  The two-target reference measured 113.248 ms and the one-pass path measured
+  84.111 ms, a $25.73\%$ elapsed-time reduction; both allocated zero bytes.
+- The separate fused-boundary comparison measured 287.678 ms versus 291.472 ms
+  for apply-then-clear, a $1.30\%$ reduction with zero allocation.
+- Appended the rerun rather than replacing the earlier conservative result,
+  preserving the observed timing variability on the throttled, busy machine.

@@ -30,6 +30,50 @@ type LegacyMemoryMeasurement =
       ManagedRetained: int64
       ConstructionAllocated: int64 }
 
+type Stage3aMeasurement =
+    { Solver: string
+      NodeVisits: int64
+      MedianMilliseconds: double
+      MedianNodesPerSecond: double
+      MedianAllocated: int64 }
+
+type OptimizationMeasurement =
+    { Variant: string
+      MedianMilliseconds: double
+      MedianAllocated: int64 }
+
+[<Struct>]
+type BenchmarkState =
+    { Node: int
+      Depth: int
+      LastAction: int }
+
+[<Struct>]
+type BenchmarkGame =
+    val Actions: int
+    val TerminalDepth: int
+
+    new(actions, terminalDepth) =
+        { Actions = actions
+          TerminalDepth = terminalDepth }
+
+    interface IExhaustiveGame<BenchmarkState> with
+        member this.TryGetTerminalUtility(state, targetPlayer, utility: byref<double>) =
+            if state.Depth = this.TerminalDepth then
+                utility <- if state.LastAction % 2 = targetPlayer then 1.0 else -1.0
+                true
+            else
+                false
+
+        member _.Actor state = state.Depth &&& 1
+        member _.InformationSetId state = state.Node
+        member this.ActionCount _ = this.Actions
+        member this.NextState(state, action) =
+            { Node = 1 + state.Node * this.Actions + action
+              Depth = state.Depth + 1
+              LastAction = action }
+        member _.ChanceProbability(_, _) = invalidOp "This benchmark has no chance nodes."
+
 let lookup actionCount (nodes: Dictionary<string, StrategyNode>) key =
     match nodes.TryGetValue key with
     | true, node -> node
@@ -181,6 +225,167 @@ let memoryPayload () =
         + doubleBytes sampled.DeltaValues
     persistent, metadata, commonBytes exhaustive.Common, exhaustiveOnly, sampledOnly
 
+let median (values: 'T[]) =
+    Array.sortInPlace values
+    values.[values.Length / 2]
+
+let private stage3Definitions actions depth =
+    let mutable levelCount = 1
+    let mutable total = 0
+    let mutable level = 0
+    while level < depth do
+        total <- total + levelCount
+        levelCount <- levelCount * actions
+        level <- level + 1
+    Array.init total (fun id ->
+        let mutable first = 0
+        let mutable count = 1
+        let mutable owner = 0
+        while id >= first + count do
+            first <- first + count
+            count <- count * actions
+            owner <- owner + 1
+        { Id = id; Owner = owner &&& 1; ActionCount = actions })
+
+let stage3NodeCount actions depth =
+    let mutable level = 1L
+    let mutable total = 0L
+    let mutable d = 0
+    while d <= depth do
+        total <- total + level
+        level <- level * int64 actions
+        d <- d + 1
+    total
+
+let runStage3aComparison actions depth iterations repetitions =
+    let referenceTimes = Array.zeroCreate repetitions
+    let referenceRates = Array.zeroCreate repetitions
+    let referenceAllocations = Array.zeroCreate repetitions
+    let optimizedTimes = Array.zeroCreate repetitions
+    let optimizedRates = Array.zeroCreate repetitions
+    let optimizedAllocations = Array.zeroCreate repetitions
+    let nodesPerTraversal = stage3NodeCount actions depth
+
+    let run reference measured =
+        let table = PackedTable.create 2 (stage3Definitions actions depth)
+        let game = BenchmarkGame(actions, depth)
+        let solver = ExhaustiveSolver(SolverMode.CFR, game, table, depth, actions)
+        let root = { Node = 0; Depth = 0; LastAction = 0 }
+        let execute iteration =
+            if reference then solver.RunTargetPairReference(iteration, 0, root)
+            else solver.RunIteration(iteration, 0, root)
+        let mutable warmup = 1
+        while warmup <= 100 do
+            execute warmup |> ignore
+            warmup <- warmup + 1
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+        let mutable iteration = 101
+        while iteration <= iterations + 100 do
+            execute iteration |> ignore
+            iteration <- iteration + 1
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        let milliseconds = float (stopped - started) * 1000.0 / float Stopwatch.Frequency
+        if measured then milliseconds, allocated else 0.0, 0L
+
+    run true false |> ignore
+    run false false |> ignore
+    let mutable repetition = 0
+    while repetition < repetitions do
+        let recordReference () =
+            let milliseconds, allocated = run true true
+            referenceTimes.[repetition] <- milliseconds
+            referenceAllocations.[repetition] <- allocated
+            referenceRates.[repetition] <-
+                float (2L * nodesPerTraversal * int64 iterations) / (milliseconds / 1000.0)
+        let recordOptimized () =
+            let milliseconds, allocated = run false true
+            optimizedTimes.[repetition] <- milliseconds
+            optimizedAllocations.[repetition] <- allocated
+            optimizedRates.[repetition] <-
+                float (nodesPerTraversal * int64 iterations) / (milliseconds / 1000.0)
+        if repetition % 2 = 0 then
+            recordReference ()
+            recordOptimized ()
+        else
+            recordOptimized ()
+            recordReference ()
+        repetition <- repetition + 1
+
+    [| { Solver = "Stage 3 two target passes"
+         NodeVisits = 2L * nodesPerTraversal * int64 iterations
+         MedianMilliseconds = median referenceTimes
+         MedianNodesPerSecond = median referenceRates
+         MedianAllocated = median referenceAllocations }
+       { Solver = "Stage 3a one pass"
+         NodeVisits = nodesPerTraversal * int64 iterations
+         MedianMilliseconds = median optimizedTimes
+         MedianNodesPerSecond = median optimizedRates
+         MedianAllocated = median optimizedAllocations } |]
+
+let runBoundaryComparison actions depth iterations repetitions =
+    let definitions = stage3Definitions actions depth
+    let metadata = (PackedTable.create 2 definitions).InfoSets
+    let slotCount = metadata |> Array.sumBy (fun row -> row.ActionCount)
+
+    let measure fused =
+        let regrets = Array.zeroCreate slotCount
+        let deltas = Array.create slotCount 0.001
+        let started = Stopwatch.GetTimestamp()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let mutable iteration = 0
+        while iteration < iterations do
+            let mutable rowIndex = 0
+            while rowIndex < metadata.Length do
+                let row = metadata.[rowIndex]
+                if fused then
+                    Scalar.applyRegretDeltaAndClearUnchecked false regrets row.Offset deltas row.Offset row.ActionCount
+                else
+                    Scalar.applyRegretDeltaUnchecked false regrets row.Offset deltas row.Offset row.ActionCount
+                rowIndex <- rowIndex + 1
+            if not fused then
+                rowIndex <- 0
+                while rowIndex < metadata.Length do
+                    let row = metadata.[rowIndex]
+                    Array.Clear(deltas, row.Offset, row.ActionCount)
+                    rowIndex <- rowIndex + 1
+            let mutable slot = 0
+            while slot < deltas.Length do
+                deltas.[slot] <- 0.001
+                slot <- slot + 1
+            iteration <- iteration + 1
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        let stopped = Stopwatch.GetTimestamp()
+        float (stopped - started) * 1000.0 / float Stopwatch.Frequency, allocated
+
+    let separateTimes = Array.zeroCreate repetitions
+    let separateAllocations = Array.zeroCreate repetitions
+    let fusedTimes = Array.zeroCreate repetitions
+    let fusedAllocations = Array.zeroCreate repetitions
+    let mutable repetition = 0
+    while repetition < repetitions do
+        let record fused =
+            let milliseconds, allocated = measure fused
+            if fused then
+                fusedTimes.[repetition] <- milliseconds
+                fusedAllocations.[repetition] <- allocated
+            else
+                separateTimes.[repetition] <- milliseconds
+                separateAllocations.[repetition] <- allocated
+        if repetition % 2 = 0 then record false; record true
+        else record true; record false
+        repetition <- repetition + 1
+    [| { Variant = "apply, then clear touched rows"
+         MedianMilliseconds = median separateTimes
+         MedianAllocated = median separateAllocations }
+       { Variant = "fused apply-and-clear"
+         MedianMilliseconds = median fusedTimes
+         MedianAllocated = median fusedAllocations } |]
+
 [<EntryPoint>]
 let main arguments =
     let counts = [| 2; 3; 4; 8; 16; 32 |]
@@ -249,4 +454,20 @@ let main arguments =
         printfn "| %d | %d | %.3f | %.0f | %.0f | %d |"
             actions iterations result.Elapsed.TotalMilliseconds
             (float iterations / seconds) (float (int64 iterations * int64 actions * 4L) / seconds) result.Allocated
+    printfn ""
+    printfn "## Stage 3a exhaustive hot-path optimization"
+    printfn ""
+    printfn "Interleaved seven-run medians; 4 actions, depth 5, 500 measured iterations."
+    printfn ""
+    printfn "| Solver | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |"
+    printfn "| --- | ---: | ---: | ---: | ---: |"
+    for result in runStage3aComparison 4 5 500 7 do
+        printfn "| %s | %d | %.3f | %.0f | %d |" result.Solver result.NodeVisits result.MedianMilliseconds result.MedianNodesPerSecond result.MedianAllocated
+    printfn ""
+    printfn "Boundary microbenchmark: 341 rows, 1,364 slots, 20,000 boundaries; medians of seven interleaved runs. Both variants include restoring deltas for the next boundary."
+    printfn ""
+    printfn "| Variant | Median elapsed ms | Median allocated bytes |"
+    printfn "| --- | ---: | ---: |"
+    for result in runBoundaryComparison 4 5 20000 7 do
+        printfn "| %s | %.3f | %d |" result.Variant result.MedianMilliseconds result.MedianAllocated
     0

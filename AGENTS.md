@@ -45,3 +45,16 @@ samples, and base optimization claims on medians rather than one timing.
 Do not overwrite earlier results. Append a new dated run section, or a clearly
 labelled additional run under the same date, so performance history and changed
 methodology remain auditable.
+
+## Write Commit Messages for Future Readers
+
+- A commit message must let a reader understand the meaningful change and the relevant design choice
+  without reopening the diff or reconstructing the author's reasoning.
+- The subject names the outcome, not the file operation. Add a short body when it is needed to explain
+  what changed and why that shape was chosen.
+- Be concrete rather than vague: name the important structure or behavior introduced, preserved, or
+  changed.
+- Let length follow missing context. Use the shortest message that makes the intent clear; do not force
+  a one-line summary when a few brief body lines are necessary, and do not turn the message into a
+  diff narration or mini-specification.
+- Keep the subject scannable (roughly 50–72 characters) and wrap body lines around 72 characters.
