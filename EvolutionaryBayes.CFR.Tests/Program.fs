@@ -52,14 +52,13 @@ type MatrixGame =
         { Utilities0 = utilities0
           Utilities1 = utilities1 }
 
-    interface IExhaustiveGame<int> with
-        member this.TryGetTerminalUtility(state, targetPlayer, utility: byref<double>) =
+    interface IGame<int> with
+        member this.TerminalUtility(state, targetPlayer) =
             if state >= 3 then
                 let index = state - 3
-                utility <- if targetPlayer = 0 then this.Utilities0.[index] else this.Utilities1.[index]
-                true
+                ValueSome(if targetPlayer = 0 then this.Utilities0.[index] else this.Utilities1.[index])
             else
-                false
+                ValueNone
 
         member _.Actor state =
             if state = 0 then 0
@@ -76,14 +75,13 @@ type CountingMatrixGame(utilities0: double[], utilities1: double[]) =
 
     member _.ActorCalls = actorCalls
 
-    interface IExhaustiveGame<int> with
-        member _.TryGetTerminalUtility(state, targetPlayer, utility: byref<double>) =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
             if state >= 3 then
                 let index = state - 3
-                utility <- if targetPlayer = 0 then utilities0.[index] else utilities1.[index]
-                true
+                ValueSome(if targetPlayer = 0 then utilities0.[index] else utilities1.[index])
             else
-                false
+                ValueNone
 
         member _.Actor state =
             actorCalls <- actorCalls + 1
@@ -94,10 +92,177 @@ type CountingMatrixGame(utilities0: double[], utilities1: double[]) =
         member _.NextState(state, action) = if state = 0 then 1 + action else 3 + (state - 1) * 2 + action
         member _.ChanceProbability(_, _) = invalidOp "This game has no chance nodes."
 
+type SampleCacheGame(utilities0: double[], utilities1: double[]) =
+    let sampledOpponentActions = ResizeArray<int>()
+
+    member _.SampledOpponentActions = sampledOpponentActions
+
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state >= 3 then
+                let index = state - 3
+                ValueSome(if targetPlayer = 0 then utilities0.[index] else utilities1.[index])
+            else
+                ValueNone
+
+        member _.Actor state = if state = 0 then 0 else 1
+        member _.InformationSetId state = if state = 0 then 0 else 1
+        member _.ActionCount _ = 2
+        member _.NextState(state, action) =
+            if state = 0 then
+                1 + action
+            else
+                sampledOpponentActions.Add action
+                3 + (state - 1) * 2 + action
+        member _.ChanceProbability(_, _) = invalidOp "This game has no chance nodes."
+
+[<Struct>]
+type BinaryTreeState =
+    { Node: int
+      Depth: int }
+
+type CountingBinaryTreeGame(terminalDepth: int) =
+    let mutable actorCalls = 0
+
+    member _.ActorCalls = actorCalls
+
+    interface IGame<BinaryTreeState> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state.Depth = terminalDepth then
+                ValueSome(if (state.Node + targetPlayer) % 2 = 0 then 1.0 else -1.0)
+            else
+                ValueNone
+
+        member _.Actor state =
+            actorCalls <- actorCalls + 1
+            state.Depth &&& 1
+
+        member _.InformationSetId state = state.Node
+        member _.ActionCount _ = 2
+        member _.NextState(state, action) =
+            { Node = 1 + state.Node * 2 + action
+              Depth = state.Depth + 1 }
+        member _.ChanceProbability(_, _) = invalidOp "This game has no chance nodes."
+
+type ChanceOnlyGame(probability0: double) =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state > 0 then
+                let value0 = if state = 1 then 2.0 else -1.0
+                ValueSome(if targetPlayer = 0 then value0 else 10.0 + value0)
+            else
+                ValueNone
+
+        member _.Actor _ = ChanceActor
+        member _.InformationSetId _ = invalidOp "Chance has no information set."
+        member _.ActionCount _ = 2
+        member _.NextState(_, action) = 1 + action
+        member _.ChanceProbability(_, action) = if action = 0 then probability0 else 1.0 - probability0
+
+[<Struct>]
+type ThreePlayerAdditiveGame =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state >= 7 then
+                let code = state - 7
+                let action2 = code / 4
+                let action0 = (code / 2) % 2
+                let action1 = code % 2
+
+                ValueSome(
+                    match targetPlayer with
+                    | 0 -> if action0 = 0 then 1.0 else 3.0
+                    | 1 -> if action1 = 0 then 4.0 else -2.0
+                    | 2 -> if action2 = 0 then -1.0 else 5.0
+                    | _ -> invalidArg "targetPlayer" "Invalid player."
+                )
+            else
+                ValueNone
+
+        member _.Actor state =
+            if state = 0 then 2
+            elif state <= 2 then 0
+            else 1
+
+        member _.InformationSetId state =
+            if state = 0 then 2
+            elif state <= 2 then 0
+            else 1
+
+        member _.ActionCount _ = 2
+        member _.NextState(state, action) =
+            if state = 0 then
+                1 + action
+            elif state <= 2 then
+                3 + (state - 1) * 2 + action
+            else
+                7 + (state - 3) * 2 + action
+        member _.ChanceProbability(_, _) = invalidOp "This game has no chance nodes."
+
+[<Struct>]
+type ConsecutiveSkippedPlayerGame =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state >= 3 then
+                let code = state - 3
+                ValueSome(
+                    match targetPlayer with
+                    | 0 -> 10.0 + float code
+                    | 1 -> -float code
+                    | 2 -> 1.0 + float code
+                    | _ -> invalidArg "targetPlayer" "Invalid player."
+                )
+            else
+                ValueNone
+
+        member _.Actor _ = 2
+        member _.InformationSetId state = state
+        member _.ActionCount _ = 2
+        member _.NextState(state, action) =
+            if state = 0 then 1 + action else 3 + (state - 1) * 2 + action
+        member _.ChanceProbability(_, _) = invalidOp "This game has no chance nodes."
+
+[<Struct>]
+type MultiplayerAverageGame =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state >= 2 then ValueSome(float (state + targetPlayer)) else ValueNone
+        member _.Actor _ = 0
+        member _.InformationSetId state = state
+        member _.ActionCount _ = 2
+        member _.NextState(state, action) =
+            if state = 0 then 1 + action else 3 + action
+        member _.ChanceProbability(_, _) = invalidOp "This game has no chance nodes."
+
+type ThreePlayerChanceGame(probability0: double) =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state = 0 then
+                ValueNone
+            else
+                let first = state = 1
+                ValueSome(
+                    match targetPlayer with
+                    | 0 -> if first then 2.0 else -1.0
+                    | 1 -> if first then 10.0 else 4.0
+                    | 2 -> if first then -4.0 else 8.0
+                    | _ -> invalidArg "targetPlayer" "Invalid player."
+                )
+
+        member _.Actor _ = ChanceActor
+        member _.InformationSetId _ = invalidOp "Chance has no information set."
+        member _.ActionCount _ = 2
+        member _.NextState(_, action) = 1 + action
+        member _.ChanceProbability(_, action) = if action = 0 then probability0 else 1.0 - probability0
+
+type OutOfRangeRandom() =
+    inherit Random()
+    override _.Sample() = 1.0
+
 [<Struct>]
 type ChanceThenPlayerGame =
-    interface IExhaustiveGame<int> with
-        member _.TryGetTerminalUtility(state, targetPlayer, utility: byref<double>) =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
             if state >= 3 then
                 let values0 =
                     match state with
@@ -105,10 +270,9 @@ type ChanceThenPlayerGame =
                     | 4 -> 0.0
                     | 5 -> 0.0
                     | _ -> 4.0
-                utility <- if targetPlayer = 0 then values0 else 10.0 + values0
-                true
+                ValueSome(if targetPlayer = 0 then values0 else 10.0 + values0)
             else
-                false
+                ValueNone
 
         member _.Actor state = if state = 0 then ChanceActor else 0
         member _.InformationSetId _ = 0
@@ -118,14 +282,13 @@ type ChanceThenPlayerGame =
 
 [<Struct>]
 type ConsecutiveTurnGame =
-    interface IExhaustiveGame<int> with
-        member _.TryGetTerminalUtility(state, targetPlayer, utility: byref<double>) =
+    interface IGame<int> with
+        member _.TerminalUtility(state, targetPlayer) =
             if state >= 7 then
                 let value0 = float (state - 7)
-                utility <- if targetPlayer = 0 then value0 else 6.0 - value0
-                true
+                ValueSome(if targetPlayer = 0 then value0 else 6.0 - value0)
             else
-                false
+                ValueNone
 
         member _.Actor state = if state < 3 then 0 else 1
         member _.InformationSetId state =
@@ -365,6 +528,21 @@ let scalarTests () =
         Scalar.normalizeAverage [| 0.0; 0.0; 0.0 |] 0 3 report 0
         assertArrayNear 1e-12 [| 1.0 / 3.0; 1.0 / 3.0; 1.0 / 3.0 |] report)
 
+    test "core/strategy/optional-output-thresholding" (fun () ->
+        let strategy = [| 0.0005; 0.1995; 0.8 |]
+        let purified = Strategy.threshold 0.001 strategy
+        assertArrayNear 1e-12 [| 0.0; 0.1995 / 0.9995; 0.8 / 0.9995 |] purified
+        assertArrayNear 0.0 [| 0.0005; 0.1995; 0.8 |] strategy
+        assertArrayNear 0.0 strategy (Strategy.threshold 0.0 strategy)
+        assertArrayNear 0.0 [| 1.0; 0.0; 0.0 |] (Strategy.threshold 0.5 [| 0.4; 0.35; 0.25 |]))
+
+    test "core/strategy/rejects-invalid-threshold-or-probability-row" (fun () ->
+        assertThrows (fun () -> Strategy.threshold -0.001 [| 1.0 |] |> ignore)
+        assertThrows (fun () -> Strategy.threshold Double.NaN [| 1.0 |] |> ignore)
+        assertThrows (fun () -> Strategy.threshold 0.1 [||] |> ignore)
+        assertThrows (fun () -> Strategy.threshold 0.1 [| 0.2; 0.2 |] |> ignore)
+        assertThrows (fun () -> Strategy.threshold 0.1 [| Double.NaN; 1.0 |] |> ignore))
+
     test "core/scalar/property-normalizes-finite-regrets" (fun () ->
         let random = Random 1729
         let regrets = Array.zeroCreate 64
@@ -425,6 +603,16 @@ let workspaceAndAllocationTests () =
             (workspace.TouchedRows.[0] = 1 && workspace.TouchedRows.[1] = 0)
         assertThrows (fun () -> Workspace.touchExhaustiveRow workspace -1)
         assertThrows (fun () -> Workspace.touchExhaustiveRow workspace 2))
+
+    test "core/workspace/sampled-plus-aggregates-before-clipping" (fun () ->
+        let workspace = Workspace.createSampled 0 3 1 1
+        let regrets = [| 1.0; 0.5 |]
+        Workspace.appendDelta workspace 0 -2.0
+        Workspace.appendDelta workspace 1 -1.0
+        Workspace.appendDelta workspace 0 2.0
+        Workspace.applySampledDeltas true regrets workspace
+        assertArrayNear 0.0 [| 1.0; 0.0 |] regrets
+        assertTrue "Applying a sampled boundary must drain its reusable log." (workspace.DeltaCount = 0))
 
     test "core/scalar/fused-apply-clear-matches-apply-then-clear" (fun () ->
         for clipped in [| false; true |] do
@@ -617,6 +805,577 @@ let exhaustiveSolverTests () =
         let allocated = GC.GetAllocatedBytesForCurrentThread() - before
         assertTrue $"Expected zero steady-state bytes, measured {allocated}." (allocated = 0L))
 
+let sampledSolverTests () =
+    let definitions =
+        [| { Id = 0; Owner = 0; ActionCount = 2 }
+           { Id = 1; Owner = 1; ActionCount = 2 } |]
+
+    let utilities0 = [| 3.0; 1.0; 0.0; 2.0 |]
+    let utilities1 = [| 1.0; 5.0; 2.0; 0.0 |]
+
+    test "sampled/public/all-four-modes-share-one-api" (fun () ->
+        for mode in
+            [| SolverMode.CFR
+               SolverMode.CFRPlus
+               SolverMode.MCCFR
+               SolverMode.MCCFRPlus |] do
+            let solver =
+                Solver<int, MatrixGame>(
+                    mode,
+                    MatrixGame(utilities0, utilities1),
+                    definitions,
+                    2,
+                    2,
+                    4,
+                    1729
+                )
+            solver.RunIteration(1, 0, 0) |> ignore
+            let average0 = solver.AverageStrategy 0
+            let average1 = solver.AverageStrategy 1
+            assertNear 1e-12 1.0 (Array.sum average0)
+            assertNear 1e-12 1.0 (Array.sum average1))
+
+    test "public/training/fixed-budget-tracks-progress-and-resumes" (fun () ->
+        let solver =
+            Solver<int, MatrixGame>(
+                SolverMode.CFR,
+                MatrixGame(Array.create 4 1.0, Array.create 4 2.0),
+                definitions,
+                2,
+                2,
+                4,
+                1729
+            )
+
+        let first = solver.Train(3, 1, 0)
+        assertTrue "The first training call must run its full budget." (first.IterationsRun = 3)
+        assertTrue "The solver must expose cumulative progress." (first.IterationsCompleted = 3)
+        assertNear 0.0 1.0 first.MeanUtility0
+        assertNear 0.0 2.0 first.MeanUtility1
+        assertTrue "Fixed-budget training does not claim convergence." (not first.Converged)
+        assertTrue "Fixed-budget training performs no convergence checks."
+            (first.ConvergenceChecks = 0 && first.ConvergenceError = ValueNone)
+
+        let second = solver.Train(2, 1, 0)
+        assertTrue "A second training call must continue rather than restart." (second.IterationsCompleted = 5)
+        assertTrue "The public low-level API must reject a skipped iteration."
+            (try
+                solver.RunIteration(7, 1, 0) |> ignore
+                false
+             with :? ArgumentException -> true))
+
+    test "public/training/tolerance-supports-consecutive-checks" (fun () ->
+        let solver =
+            Solver<int, MatrixGame>(
+                SolverMode.CFR,
+                MatrixGame(Array.create 4 1.0, Array.create 4 2.0),
+                definitions,
+                2,
+                2,
+                4,
+                1729
+            )
+
+        let check =
+            ConvergenceCheck.create 0.0 1
+            |> ConvergenceCheck.withConsecutiveChecks 2
+
+        let result =
+            solver.TrainUntil(
+                10,
+                0,
+                0,
+                check,
+                fun progress ->
+                    if progress.IterationsCompleted >= 3 then 0.0 else 1.0
+            )
+
+        assertTrue "Two successful checks after iteration three should stop at four."
+            (result.IterationsRun = 4 && result.IterationsCompleted = 4)
+        assertTrue "The tolerance stop must be explicit." result.Converged
+        assertTrue "Every iteration was checked." (result.ConvergenceChecks = 4)
+        assertTrue "The last accepted error must be retained."
+            (result.ConvergenceError = ValueSome 0.0))
+
+    test "public/training/checks-the-final-partial-interval" (fun () ->
+        let solver =
+            Solver<int, MatrixGame>(
+                SolverMode.CFR,
+                MatrixGame(Array.create 4 1.0, Array.create 4 2.0),
+                definitions,
+                2,
+                2,
+                4,
+                1729
+            )
+
+        let result =
+            solver.TrainUntil(
+                5,
+                0,
+                0,
+                ConvergenceCheck.create 0.0 3,
+                fun _ -> 1.0
+            )
+
+        assertTrue "The interval and final boundary should both be checked."
+            (result.ConvergenceChecks = 2)
+        assertTrue "An unmet tolerance must exhaust the iteration budget."
+            (result.IterationsRun = 5 && not result.Converged)
+
+        assertThrows (fun () -> ConvergenceCheck.create Double.NaN 1 |> ignore)
+        assertThrows (fun () ->
+            let invalid = Solver<int, MatrixGame>(SolverMode.CFR, MatrixGame(utilities0, utilities1), definitions, 2, 2, 4, 1)
+            invalid.TrainUntil(1, 0, 0, ConvergenceCheck.create 0.0 1, fun _ -> -1.0)
+            |> ignore))
+
+    test "public/training/known-utility-error-helper" (fun () ->
+        let error = Convergence.utilityError 0 -0.25
+        let progress =
+            { IterationsRun = 2
+              IterationsCompleted = 2
+              MeanUtilities = [| -0.2; 0.2 |] }
+
+        assertNear 1e-12 0.05 (error progress)
+        assertThrows (fun () -> Convergence.utilityError -1 0.0 |> ignore)
+        assertThrows (fun () -> Convergence.utilityError 2 0.0 progress |> ignore))
+
+    test "public/reporting/evaluates-normalized-average-profile" (fun () ->
+        let matrix =
+            Solver<int, MatrixGame>(
+                SolverMode.CFR,
+                MatrixGame(utilities0, utilities1),
+                definitions,
+                2,
+                2,
+                4,
+                1729
+            )
+        let struct (matrixUtility0, matrixUtility1) =
+            matrix.EvaluateAverageProfile 0
+        assertNear 1e-12 1.5 matrixUtility0
+        assertNear 1e-12 2.0 matrixUtility1
+
+        let chance =
+            Solver<int, ChanceOnlyGame>(
+                SolverMode.CFR,
+                ChanceOnlyGame 0.7,
+                [||],
+                1,
+                2,
+                1,
+                1729
+            )
+        let struct (chanceUtility0, chanceUtility1) =
+            chance.EvaluateAverageProfile 0
+        assertNear 1e-12 1.1 chanceUtility0
+        assertNear 1e-12 11.1 chanceUtility1)
+
+    test "sampled/mccfr/regret-estimate-mean-matches-exhaustive" (fun () ->
+        let exhaustiveTable = PackedTable.create 2 definitions
+        let exhaustive =
+            ExhaustiveSolver(
+                SolverMode.CFR,
+                MatrixGame(utilities0, utilities1),
+                exhaustiveTable,
+                2,
+                2
+            )
+        exhaustive.RunIteration(1, 0, 0) |> ignore
+
+        let sampleCount = 20000
+        let totals = Array.zeroCreate 4
+        let squareTotals = Array.zeroCreate 4
+        let random = Random 1729
+        let mutable sample = 0
+
+        while sample < sampleCount do
+            let table = PackedTable.create 2 definitions
+            let solver =
+                SampledSolver(
+                    SolverMode.MCCFR,
+                    MatrixGame(utilities0, utilities1),
+                    table,
+                    2,
+                    2,
+                    4,
+                    random
+                )
+            solver.RunIteration(1, 0, 0) |> ignore
+
+            let mutable slot = 0
+            while slot < totals.Length do
+                let delta = table.Tables.Regrets.[slot]
+                totals.[slot] <- totals.[slot] + delta
+                squareTotals.[slot] <- squareTotals.[slot] + delta * delta
+                slot <- slot + 1
+            sample <- sample + 1
+
+        for slot in 0..totals.Length - 1 do
+            let mean = totals.[slot] / float sampleCount
+            let sampleVariance =
+                (squareTotals.[slot] - float sampleCount * mean * mean)
+                / float (sampleCount - 1)
+            let standardError = sqrt (max 0.0 sampleVariance / float sampleCount)
+            assertNear
+                (max 1e-12 (6.0 * standardError))
+                exhaustiveTable.Tables.Regrets.[slot]
+                mean)
+
+    test "sampled/non-target/reuses-one-action-per-information-set" (fun () ->
+        let game = SampleCacheGame(utilities0, utilities1)
+        let solver = Solver<int, SampleCacheGame>(SolverMode.MCCFR, game, definitions, 2, 2, 4, 7)
+        solver.RunIteration(1, 0, 0) |> ignore
+        assertTrue "The target-0 pass must visit the repeated opponent row twice."
+            (game.SampledOpponentActions.Count >= 2)
+        assertTrue "Both visits must reuse the traversal's cached pure action."
+            (game.SampledOpponentActions.[0] = game.SampledOpponentActions.[1]))
+
+    test "sampled/fixed-seed/reproduces-utilities-and-tables" (fun () ->
+        let run () =
+            let solver =
+                Solver<int, MatrixGame>(
+                    SolverMode.MCCFR,
+                    MatrixGame(utilities0, utilities1),
+                    definitions,
+                    2,
+                    2,
+                    4,
+                    99
+                )
+            let mutable last = struct (0.0, 0.0)
+            let mutable iteration = 1
+            while iteration <= 100 do
+                last <- solver.RunIteration(iteration, 0, 0)
+                iteration <- iteration + 1
+            last, Array.copy solver.Table.Tables.Regrets, Array.copy solver.Table.Tables.StrategySums
+
+        let utilityA, regretsA, sumsA = run ()
+        let utilityB, regretsB, sumsB = run ()
+        assertTrue "Fixed seeds must reproduce sampled utilities." (utilityA = utilityB)
+        assertArrayNear 0.0 regretsA regretsB
+        assertArrayNear 0.0 sumsA sumsB)
+
+    test "sampled/modes/signed-can-be-negative-plus-cannot" (fun () ->
+        let signed =
+            Solver<int, MatrixGame>(
+                SolverMode.MCCFR,
+                MatrixGame(utilities0, utilities1),
+                definitions,
+                2,
+                2,
+                4,
+                1
+            )
+        let clipped =
+            Solver<int, MatrixGame>(
+                SolverMode.MCCFRPlus,
+                MatrixGame(utilities0, utilities1),
+                definitions,
+                2,
+                2,
+                4,
+                1
+            )
+        signed.RunIteration(1, 0, 0) |> ignore
+        clipped.RunIteration(1, 0, 0) |> ignore
+        assertTrue "MCCFR must retain signed sampled regret."
+            (signed.Table.Tables.Regrets |> Array.exists (fun value -> value < 0.0))
+        assertTrue "MCCFR+ must clip the complete sampled update at zero."
+            (clipped.Table.Tables.Regrets |> Array.forall (fun value -> value >= 0.0)))
+
+    test "sampled/averaging/uniform-and-linear-weights" (fun () ->
+        let constantGame = MatrixGame(Array.create 4 1.0, Array.create 4 2.0)
+        let uniform = Solver<int, MatrixGame>(SolverMode.MCCFR, constantGame, definitions, 2, 2, 4, 3)
+        let linear = Solver<int, MatrixGame>(SolverMode.MCCFRPlus, constantGame, definitions, 2, 2, 4, 3)
+
+        for iteration in 1..3 do
+            uniform.RunIteration(iteration, 1, 0) |> ignore
+            linear.RunIteration(iteration, 1, 0) |> ignore
+
+        assertNear 1e-12 2.0 (Array.sum uniform.Table.Tables.StrategySums.[0..1])
+        assertNear 1e-12 2.0 (Array.sum uniform.Table.Tables.StrategySums.[2..3])
+        assertNear 1e-12 3.0 (Array.sum linear.Table.Tables.StrategySums.[0..1])
+        assertNear 1e-12 3.0 (Array.sum linear.Table.Tables.StrategySums.[2..3])
+        assertArrayNear 1e-12 [| 0.5; 0.5 |] (uniform.AverageStrategy 0)
+        assertArrayNear 1e-12 [| 0.5; 0.5 |] (linear.AverageStrategy 1))
+
+    test "sampled/traversal/touches-fewer-nodes-than-exhaustive" (fun () ->
+        let treeDefinitions =
+            Array.init 31 (fun id ->
+                { Id = id
+                  Owner = if id = 0 || (id >= 3 && id < 7) || id >= 15 then 0 else 1
+                  ActionCount = 2 })
+        let root = { Node = 0; Depth = 0 }
+        let exhaustiveGame = CountingBinaryTreeGame 5
+        let sampledGame = CountingBinaryTreeGame 5
+        let exhaustive =
+            Solver<BinaryTreeState, CountingBinaryTreeGame>(
+                SolverMode.CFR,
+                exhaustiveGame,
+                treeDefinitions,
+                5,
+                2,
+                62,
+                5
+            )
+        let sampled =
+            Solver<BinaryTreeState, CountingBinaryTreeGame>(
+                SolverMode.MCCFR,
+                sampledGame,
+                treeDefinitions,
+                5,
+                2,
+                62,
+                5
+            )
+        exhaustive.RunIteration(1, 0, root) |> ignore
+        sampled.RunIteration(1, 0, root) |> ignore
+        assertTrue
+            $"Expected sampled traversal below {exhaustiveGame.ActorCalls} visits; got {sampledGame.ActorCalls}."
+            (sampledGame.ActorCalls < exhaustiveGame.ActorCalls))
+
+    test "sampled/chance/is-unbiased-and-rejects-invalid-rows" (fun () ->
+        let solver = Solver<int, ChanceOnlyGame>(SolverMode.MCCFR, ChanceOnlyGame 0.7, [||], 1, 2, 1, 1729)
+        let mutable total0 = 0.0
+        let mutable total1 = 0.0
+        let sampleCount = 50000
+
+        for iteration in 1..sampleCount do
+            let struct (utility0, utility1) = solver.RunIteration(iteration, 0, 0)
+            total0 <- total0 + utility0
+            total1 <- total1 + utility1
+
+        assertNear 0.03 1.1 (total0 / float sampleCount)
+        assertNear 0.03 11.1 (total1 / float sampleCount)
+
+        let invalid = Solver<int, ChanceOnlyGame>(SolverMode.MCCFR, ChanceOnlyGame 1.2, [||], 1, 2, 1, 1)
+        assertThrows (fun () -> invalid.RunIteration(1, 0, 0) |> ignore))
+
+    test "sampled/validation/rejects-random-draw-and-log-overflow" (fun () ->
+        let invalidRandom =
+            Solver<int, MatrixGame>(
+                SolverMode.MCCFR,
+                MatrixGame(utilities0, utilities1),
+                definitions,
+                2,
+                2,
+                4,
+                OutOfRangeRandom()
+            )
+        assertThrows (fun () -> invalidRandom.RunIteration(1, 0, 0) |> ignore)
+
+        let undersized =
+            Solver<int, MatrixGame>(
+                SolverMode.MCCFR,
+                MatrixGame(utilities0, utilities1),
+                definitions,
+                2,
+                2,
+                1,
+                1
+            )
+        assertThrows (fun () -> undersized.RunIteration(1, 0, 0) |> ignore))
+
+    test "sampled/allocation/both-modes-zero-after-warmup" (fun () ->
+        for mode in [| SolverMode.MCCFR; SolverMode.MCCFRPlus |] do
+            let solver =
+                Solver<int, MatrixGame>(
+                    mode,
+                    MatrixGame([| 1.0; -1.0; -1.0; 1.0 |], [| -1.0; 1.0; 1.0; -1.0 |]),
+                    definitions,
+                    2,
+                    2,
+                    4,
+                    1729
+                )
+            solver.RunIteration(1, 0, 0) |> ignore
+            GC.Collect()
+            GC.WaitForPendingFinalizers()
+            GC.Collect()
+            let before = GC.GetAllocatedBytesForCurrentThread()
+
+            for iteration in 2..10001 do
+                solver.RunIteration(iteration, 0, 0) |> ignore
+
+            let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+            assertTrue $"Expected zero steady-state bytes for {mode}, measured {allocated}." (allocated = 0L))
+
+let multiplayerSolverTests () =
+    let definitions =
+        [| { Id = 0; Owner = 0; ActionCount = 2 }
+           { Id = 1; Owner = 1; ActionCount = 2 }
+           { Id = 2; Owner = 2; ActionCount = 2 } |]
+
+    let create mode =
+        Solver<int, ThreePlayerAdditiveGame>(
+            mode,
+            ThreePlayerAdditiveGame(),
+            3,
+            definitions,
+            3,
+            2,
+            6,
+            1729
+        )
+
+    test "multiplayer/all-modes/hand-computed-utilities-and-regrets" (fun () ->
+        for mode in
+            [| SolverMode.CFR
+               SolverMode.CFRPlus
+               SolverMode.MCCFR
+               SolverMode.MCCFRPlus |] do
+            let solver = create mode
+            let utilities = Array.zeroCreate 3
+            solver.RunIterationInto(1, 0, 0, utilities)
+            assertArrayNear 1e-12 [| 2.0; 1.0; 2.0 |] utilities
+
+            let expectedRegrets =
+                match (Mode.semantics mode).RegretTransform with
+                | Signed -> [| -1.0; 1.0; 3.0; -3.0; -3.0; 3.0 |]
+                | Clipped -> [| 0.0; 1.0; 3.0; 0.0; 0.0; 3.0 |]
+
+            assertArrayNear 1e-12 expectedRegrets solver.Table.Tables.Regrets
+            assertArrayNear
+                1e-12
+                [| 0.5; 0.5; 0.5; 0.5; 0.5; 0.5 |]
+                solver.Table.Tables.StrategySums
+
+            let result = solver.Train(1, 0, 0)
+            assertTrue "Training must report one mean per player."
+                (result.MeanUtilities.Length = 3)
+            assertArrayNear 1e-12 [| 2.5; 2.5; 3.5 |] result.MeanUtilities)
+
+    test "multiplayer/actors/consecutive-turns-and-skipped-player" (fun () ->
+        let consecutiveDefinitions =
+            Array.init 3 (fun id ->
+                { Id = id
+                  Owner = 2
+                  ActionCount = 2 })
+        let solver =
+            Solver<int, ConsecutiveSkippedPlayerGame>(
+                SolverMode.CFR,
+                ConsecutiveSkippedPlayerGame(),
+                3,
+                consecutiveDefinitions,
+                2,
+                2,
+                6,
+                7
+            )
+        let utilities = Array.zeroCreate 3
+        solver.RunIterationInto(1, 0, 0, utilities)
+        assertArrayNear 1e-12 [| 11.5; -1.5; 2.5 |] utilities)
+
+    test "multiplayer/mccfr/exact-average-sweep-uses-own-reach" (fun () ->
+        let averageDefinitions =
+            [| { Id = 0; Owner = 0; ActionCount = 2 }
+               { Id = 1; Owner = 0; ActionCount = 2 } |]
+
+        for mode in [| SolverMode.MCCFR; SolverMode.MCCFRPlus |] do
+            let solver =
+                Solver<int, MultiplayerAverageGame>(
+                    mode,
+                    MultiplayerAverageGame(),
+                    3,
+                    averageDefinitions,
+                    2,
+                    2,
+                    6,
+                    11
+                )
+            solver.Table.Tables.Regrets.[0] <- 4.0
+            solver.Table.Tables.Regrets.[1] <- 1.0
+            let utilities = Array.zeroCreate 3
+            solver.RunIterationInto(1, 0, 0, utilities)
+            assertArrayNear
+                1e-12
+                [| 0.8; 0.2; 0.4; 0.4 |]
+                solver.Table.Tables.StrategySums)
+
+    test "multiplayer/chance/exhaustive-exact-and-sampled-unbiased" (fun () ->
+        let expected = [| -0.25; 5.5; 5.0 |]
+
+        for mode in [| SolverMode.CFR; SolverMode.CFRPlus |] do
+            let solver =
+                Solver<int, ThreePlayerChanceGame>(
+                    mode,
+                    ThreePlayerChanceGame 0.25,
+                    3,
+                    [||],
+                    1,
+                    2,
+                    1,
+                    19
+                )
+            let utilities = Array.zeroCreate 3
+            solver.RunIterationInto(1, 0, 0, utilities)
+            assertArrayNear 1e-12 expected utilities
+
+        for mode in [| SolverMode.MCCFR; SolverMode.MCCFRPlus |] do
+            let solver =
+                Solver<int, ThreePlayerChanceGame>(
+                    mode,
+                    ThreePlayerChanceGame 0.25,
+                    3,
+                    [||],
+                    1,
+                    2,
+                    1,
+                    1729
+                )
+            let result = solver.Train(50_000, 0, 0)
+            assertArrayNear 0.06 expected result.MeanUtilities)
+
+    test "multiplayer/reporting/evaluates-every-player" (fun () ->
+        let solver = create SolverMode.CFR
+        let utilities = Array.zeroCreate 3
+        solver.EvaluateAverageProfileInto(0, utilities)
+        assertArrayNear 1e-12 [| 2.0; 1.0; 2.0 |] utilities
+        assertThrows (fun () -> solver.EvaluateAverageProfile 0 |> ignore)
+        assertThrows (fun () -> solver.RunIteration(1, 0, 0) |> ignore))
+
+    test "multiplayer/validation/rejects-player-count-and-buffer-mismatch" (fun () ->
+        assertThrows (fun () ->
+            Solver<int, ThreePlayerAdditiveGame>(
+                SolverMode.CFR,
+                ThreePlayerAdditiveGame(),
+                1,
+                definitions,
+                3,
+                2,
+                6,
+                1
+            )
+            |> ignore)
+
+        let solver = create SolverMode.CFR
+        assertThrows (fun () -> solver.RunIterationInto(1, 0, 0, Array.zeroCreate 2)))
+
+    test "multiplayer/allocation/all-modes-zero-after-warmup" (fun () ->
+        for mode in
+            [| SolverMode.CFR
+               SolverMode.CFRPlus
+               SolverMode.MCCFR
+               SolverMode.MCCFRPlus |] do
+            let solver = create mode
+            let utilities = Array.zeroCreate 3
+            solver.RunIterationInto(1, 0, 0, utilities)
+            GC.Collect()
+            GC.WaitForPendingFinalizers()
+            GC.Collect()
+            let before = GC.GetAllocatedBytesForCurrentThread()
+            let mutable iteration = 2
+
+            while iteration <= 10_001 do
+                solver.RunIterationInto(iteration, 0, 0, utilities)
+                iteration <- iteration + 1
+
+            let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+            assertTrue
+                $"Expected zero steady-state multiplayer bytes for {mode}, measured {allocated}."
+                (allocated = 0L))
+
 [<EntryPoint>]
 let main _ =
     helperTests ()
@@ -625,5 +1384,7 @@ let main _ =
     scalarTests ()
     workspaceAndAllocationTests ()
     exhaustiveSolverTests ()
+    sampledSolverTests ()
+    multiplayerSolverTests ()
     printfn "%d test(s) failed." failures
     if failures = 0 then 0 else 1

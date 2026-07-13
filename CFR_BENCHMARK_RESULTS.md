@@ -239,3 +239,170 @@ That is a $1.30\%$ boundary reduction. These results strengthen the evidence
 for retaining the one-pass traversal, while the variation between sessions
 continues to justify reporting all interleaved medians rather than selecting a
 single best run.
+
+## 2026-07-13
+
+### Stage 4 - two-player public CFR, CFR+, MCCFR, and MCCFR+
+
+- Source revision: `eff7135` plus the Stage 4 working-tree implementation
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+- Seed: `1729`
+
+The environment qualification at the top of this document still applies: the
+machine is approximately 65% throttled and typically carries more than 50% CPU
+load from other work. The four modes were therefore run in rotating interleaved
+order for seven repetitions, and medians are reported. Absolute times are a
+constrained snapshot; zero-allocation results, exact workspace payloads, node
+counts, and the large same-session traversal differences are the reliable
+signals.
+
+The fixture has four legal actions, terminal depth five, 341 nonterminal
+information sets, and 1,364 legal information-set/action slots. Each measured
+sample ran 500 iterations after 100 warm-up iterations. `Node visits` counts
+nonterminal actor queries, so vanilla CFR's one-pass specialization visits 341
+nodes per iteration, while CFR+ makes two exhaustive target passes. The paired
+sampled traversals visit 67 nonterminal nodes per iteration.
+
+| Mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| CFR | 170,500 | 79.797 | 2,136,677 | 0 |
+| CFR+ | 341,000 | 99.229 | 3,436,482 | 0 |
+| MCCFR | 33,500 | 14.882 | 2,251,102 | 0 |
+| MCCFR+ | 33,500 | 13.919 | 2,406,851 | 0 |
+
+On this fixed-shape fixture, MCCFR visits $80.35\%$ fewer nonterminal nodes than
+CFR and reduces median elapsed time by $81.35\%$. MCCFR+ visits $90.18\%$ fewer
+nonterminal nodes than CFR+ and reduces median elapsed time by $85.97\%$. These
+are algorithmic traversal comparisons, not claims that sampled and exhaustive
+iterations provide equal statistical progress. All four warmed paths allocate
+zero bytes.
+
+The sampled log capacity was set to the exact 104 target action slots touched by
+the paired passes. Persistent regrets, strategy sums, and metadata are shared
+by both traversal kinds and are excluded from this workspace-only comparison.
+
+| Workspace | Exact managed-array payload bytes |
+| --- | ---: |
+| Exhaustive | 15,324 |
+| Sampled | 5,660 |
+
+The sampled workspace is 9,664 bytes, or $63.06\%$, smaller for this fixture.
+It replaces the dense exhaustive regret-delta array and touched-row arrays with
+two information-set sample-cache arrays and a sparse integer/double delta log.
+Both workspaces retain the same depth-local strategy/utility scratch and
+average-strategy epoch array.
+
+Reproduce with:
+
+```powershell
+dotnet run --project .\EvolutionaryBayes.CFR.Benchmarks\EvolutionaryBayes.CFR.Benchmarks.fsproj -c Release -- --revision working-tree
+```
+
+### ValueOption terminal-contract verification
+
+- Source revision: `eff7135` plus the Stage 4, training-surface, exact-profile,
+  and `ValueOption` working-tree changes
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+- Seed: `1729`
+
+This additional run checks the terminal hot path after replacing the
+output-`byref` callback with `double voption`. The machine remained
+approximately 65% throttled and typically above 50% background CPU load. The
+four modes were run in rotating interleaved order for seven repetitions, and
+the table reports medians. The fixture, seed, warm-up, and workload match the
+Stage 4 run: four actions, terminal depth five, 341 information sets, 1,364
+slots, 100 warm-up iterations, and 500 measured iterations.
+
+| Mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| CFR | 170,500 | 85.035 | 2,005,052 | 0 |
+| CFR+ | 341,000 | 100.608 | 3,389,403 | 0 |
+| MCCFR | 33,500 | 12.427 | 2,695,743 | 0 |
+| MCCFR+ | 33,500 | 16.734 | 2,001,876 | 0 |
+
+All four modes remain allocation-free. Relative to the earlier constrained
+Stage 4 session, elapsed-time changes range from a 16.5% reduction to a 20.2%
+increase depending on mode. Because this is not an isolated before/after binary
+comparison and the machine load is unstable, those timing differences are
+provisional and do not establish either a speedup or regression. The reliable
+result is that the cleaner `ValueOption` contract preserves node counts and
+zero steady-state allocation. An isolated interleaved callback benchmark would
+be required before claiming a throughput difference.
+
+### Stage 5 - $N$-player general-sum and chance completion
+
+- Source revision: `eff7135b61a5c4053a9a19fc541ab0859e4ef099` plus the
+  Stage 5 and preceding uncommitted CFR working-tree changes
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+- Seed: `1729`
+
+The machine remained approximately 65% throttled and normally above 50%
+background CPU load. All timing tables therefore report medians from seven
+rotating or paired-interleaved repetitions. Absolute throughput remains
+provisional. Exact node counts, array payloads, and zero-allocation results are
+the stronger evidence.
+
+The common fixture has four actions, terminal depth five, 341 information
+sets, and 1,364 legal slots. Every sample runs 500 measured iterations after
+100 warm-up iterations. `Node visits` counts nonterminal actor queries. The
+unchanged two-player workload verifies that Stage 5 still selects one
+exhaustive traversal for CFR, two direct target traversals for CFR+, and the
+paired external-sampling path for both MCCFR modes.
+
+| Two-player mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| CFR | 170,500 | 69.836 | 2,441,441 | 0 |
+| CFR+ | 341,000 | 87.007 | 3,919,216 | 0 |
+| MCCFR | 33,500 | 8.890 | 3,768,406 | 0 |
+| MCCFR+ | 33,500 | 10.071 | 3,326,515 | 0 |
+
+Because separate-day throughput varies substantially on this machine, Stage 5
+also adds a same-session paired comparison. `Direct` calls the selected
+internal two-player solver and performs scalar utility accounting, approximating
+the pre-multiplayer boundary. `Public` calls the Stage 5 `Solver.RunIteration`
+tuple path. Pair order alternates by repetition.
+
+| Mode | Direct median ms | Public median ms | Public/direct | Direct allocated bytes | Public allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CFR | 92.255 | 87.776 | 0.951 | 0 | 0 |
+| CFR+ | 103.202 | 110.502 | 1.071 | 0 | 0 |
+| MCCFR | 13.011 | 11.298 | 0.868 | 0 | 0 |
+| MCCFR+ | 15.682 | 14.964 | 0.954 | 0 | 0 |
+
+The public/direct ratios range from 0.868 to 1.071, with three public medians
+lower and one 7.1% higher. Under the known unstable load, this does not support
+a throughput improvement claim, but it shows no consistent material boundary
+regression. Both sides allocate zero bytes. More importantly, the public node
+counts exactly select the established two-player schedules; multiplayer logic
+does not enter the recursive hot paths.
+
+The three-player fixture assigns actors by depth modulo three. Exhaustive modes
+make one complete target traversal per player. Sampled modes include the exact
+full-tree average-strategy sweep once per iteration, followed by three external-
+sampling regret passes.
+
+| Three-player mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| CFR | 511,500 | 212.548 | 2,406,511 | 0 |
+| CFR+ | 511,500 | 212.162 | 2,410,898 | 0 |
+| MCCFR | 197,500 | 56.127 | 3,518,780 | 0 |
+| MCCFR+ | 197,500 | 50.788 | 3,888,706 | 0 |
+
+All four multiplayer modes allocate zero steady-state bytes. The public solver
+owns two reusable `double[3]` utility arrays, an exact 48-byte numeric payload.
+Only sampled multiplayer modes own the additional `double[3]` exact-average
+reach vector, adding 24 bytes. Two-player solvers do not allocate that vector.
+Persistent regret/strategy tables and packed metadata remain unchanged at
+$16M$ numeric bytes plus metadata for $M$ legal slots.

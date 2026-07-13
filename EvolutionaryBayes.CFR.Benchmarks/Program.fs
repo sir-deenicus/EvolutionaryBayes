@@ -42,6 +42,21 @@ type OptimizationMeasurement =
       MedianMilliseconds: double
       MedianAllocated: int64 }
 
+type Stage4Measurement =
+    { Mode: SolverMode
+      NodeVisits: int64
+      MedianMilliseconds: double
+      MedianNodesPerSecond: double
+      MedianAllocated: int64 }
+
+type FastPathMeasurement =
+    { Mode: SolverMode
+      DirectMedianMilliseconds: double
+      PublicMedianMilliseconds: double
+      PublicOverDirect: double
+      DirectMedianAllocated: int64
+      PublicMedianAllocated: int64 }
+
 [<Struct>]
 type BenchmarkState =
     { Node: int
@@ -57,19 +72,66 @@ type BenchmarkGame =
         { Actions = actions
           TerminalDepth = terminalDepth }
 
-    interface IExhaustiveGame<BenchmarkState> with
-        member this.TryGetTerminalUtility(state, targetPlayer, utility: byref<double>) =
+    interface IGame<BenchmarkState> with
+        member this.TerminalUtility(state, targetPlayer) =
             if state.Depth = this.TerminalDepth then
-                utility <- if state.LastAction % 2 = targetPlayer then 1.0 else -1.0
-                true
+                ValueSome(if state.LastAction % 2 = targetPlayer then 1.0 else -1.0)
             else
-                false
+                ValueNone
 
         member _.Actor state = state.Depth &&& 1
         member _.InformationSetId state = state.Node
         member this.ActionCount _ = this.Actions
         member this.NextState(state, action) =
             { Node = 1 + state.Node * this.Actions + action
+              Depth = state.Depth + 1
+              LastAction = action }
+        member _.ChanceProbability(_, _) = invalidOp "This benchmark has no chance nodes."
+
+type Stage4BenchmarkGame(actions: int, terminalDepth: int) =
+    let mutable actorCalls = 0L
+
+    member _.ActorCalls = actorCalls
+    member _.ResetActorCalls() = actorCalls <- 0L
+
+    interface IGame<BenchmarkState> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state.Depth = terminalDepth then
+                ValueSome(if state.LastAction % 2 = targetPlayer then 1.0 else -1.0)
+            else
+                ValueNone
+
+        member _.Actor state =
+            actorCalls <- actorCalls + 1L
+            state.Depth &&& 1
+        member _.InformationSetId state = state.Node
+        member _.ActionCount _ = actions
+        member _.NextState(state, action) =
+            { Node = 1 + state.Node * actions + action
+              Depth = state.Depth + 1
+              LastAction = action }
+        member _.ChanceProbability(_, _) = invalidOp "This benchmark has no chance nodes."
+
+type Stage5BenchmarkGame(actions: int, terminalDepth: int) =
+    let mutable actorCalls = 0L
+
+    member _.ActorCalls = actorCalls
+    member _.ResetActorCalls() = actorCalls <- 0L
+
+    interface IGame<BenchmarkState> with
+        member _.TerminalUtility(state, targetPlayer) =
+            if state.Depth = terminalDepth then
+                ValueSome(if state.LastAction % 3 = targetPlayer then 1.0 else -1.0)
+            else
+                ValueNone
+
+        member _.Actor state =
+            actorCalls <- actorCalls + 1L
+            state.Depth % 3
+        member _.InformationSetId state = state.Node
+        member _.ActionCount _ = actions
+        member _.NextState(state, action) =
+            { Node = 1 + state.Node * actions + action
               Depth = state.Depth + 1
               LastAction = action }
         member _.ChanceProbability(_, _) = invalidOp "This benchmark has no chance nodes."
@@ -247,6 +309,30 @@ let private stage3Definitions actions depth =
             owner <- owner + 1
         { Id = id; Owner = owner &&& 1; ActionCount = actions })
 
+let private stage5Definitions actions depth =
+    let mutable levelCount = 1
+    let mutable total = 0
+    let mutable level = 0
+
+    while level < depth do
+        total <- total + levelCount
+        levelCount <- levelCount * actions
+        level <- level + 1
+
+    Array.init total (fun id ->
+        let mutable first = 0
+        let mutable count = 1
+        let mutable owner = 0
+
+        while id >= first + count do
+            first <- first + count
+            count <- count * actions
+            owner <- owner + 1
+
+        { Id = id
+          Owner = owner % 3
+          ActionCount = actions })
+
 let stage3NodeCount actions depth =
     let mutable level = 1L
     let mutable total = 0L
@@ -386,6 +472,281 @@ let runBoundaryComparison actions depth iterations repetitions =
          MedianMilliseconds = median fusedTimes
          MedianAllocated = median fusedAllocations } |]
 
+let stage4DeltaCapacity actions depth =
+    let mutable branchCount = 1L
+    let mutable slots = 0L
+    let mutable level = 0
+
+    while level < depth do
+        slots <- slots + branchCount * int64 actions
+
+        if level &&& 1 = 1 then
+            branchCount <- branchCount * int64 actions
+
+        level <- level + 1
+
+    if slots > int64 Int32.MaxValue then invalidArg "depth" "Sampled benchmark log is too large."
+    int slots
+
+let runStage4Comparison actions depth iterations repetitions =
+    let modes =
+        [| SolverMode.CFR
+           SolverMode.CFRPlus
+           SolverMode.MCCFR
+           SolverMode.MCCFRPlus |]
+    let times = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let rates = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let allocations = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let visits = Array.zeroCreate<int64> modes.Length
+    let definitions = stage3Definitions actions depth
+    let deltaCapacity = stage4DeltaCapacity actions depth
+    let root = { Node = 0; Depth = 0; LastAction = 0 }
+
+    let run mode measured =
+        let game = Stage4BenchmarkGame(actions, depth)
+        let solver =
+            Solver<BenchmarkState, Stage4BenchmarkGame>(
+                mode,
+                game,
+                definitions,
+                depth,
+                actions,
+                deltaCapacity,
+                1729
+            )
+
+        for iteration in 1..100 do
+            solver.RunIteration(iteration, 0, root) |> ignore
+
+        game.ResetActorCalls()
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+
+        for iteration in 101..iterations + 100 do
+            solver.RunIteration(iteration, 0, root) |> ignore
+
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        let milliseconds = float (stopped - started) * 1000.0 / float Stopwatch.Frequency
+
+        if measured then
+            milliseconds, allocated, game.ActorCalls
+        else
+            0.0, 0L, 0L
+
+    for mode in modes do
+        run mode false |> ignore
+
+    for repetition in 0..repetitions - 1 do
+        for order in 0..modes.Length - 1 do
+            let modeIndex = (order + repetition) % modes.Length
+            let milliseconds, allocated, nodeVisits = run modes.[modeIndex] true
+            times.[modeIndex].[repetition] <- milliseconds
+            allocations.[modeIndex].[repetition] <- allocated
+            visits.[modeIndex] <- nodeVisits
+            rates.[modeIndex].[repetition] <-
+                float nodeVisits / (milliseconds / 1000.0)
+
+    Array.init modes.Length (fun index ->
+        { Mode = modes.[index]
+          NodeVisits = visits.[index]
+          MedianMilliseconds = median times.[index]
+          MedianNodesPerSecond = median rates.[index]
+          MedianAllocated = median allocations.[index] })
+
+let runStage5Comparison actions depth iterations repetitions =
+    let modes =
+        [| SolverMode.CFR
+           SolverMode.CFRPlus
+           SolverMode.MCCFR
+           SolverMode.MCCFRPlus |]
+    let times = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let rates = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let allocations = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let visits = Array.zeroCreate<int64> modes.Length
+    let definitions = stage5Definitions actions depth
+    let deltaCapacity = stage4DeltaCapacity actions depth * 2
+    let root = { Node = 0; Depth = 0; LastAction = 0 }
+
+    let run mode measured =
+        let game = Stage5BenchmarkGame(actions, depth)
+        let solver =
+            Solver<BenchmarkState, Stage5BenchmarkGame>(
+                mode,
+                game,
+                3,
+                definitions,
+                depth,
+                actions,
+                deltaCapacity,
+                1729
+            )
+        let utilities = Array.zeroCreate 3
+
+        for iteration in 1..100 do
+            solver.RunIterationInto(iteration, 0, root, utilities)
+
+        game.ResetActorCalls()
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+
+        for iteration in 101..iterations + 100 do
+            solver.RunIterationInto(iteration, 0, root, utilities)
+
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        let milliseconds = float (stopped - started) * 1000.0 / float Stopwatch.Frequency
+
+        if measured then milliseconds, allocated, game.ActorCalls else 0.0, 0L, 0L
+
+    for mode in modes do
+        run mode false |> ignore
+
+    for repetition in 0..repetitions - 1 do
+        for order in 0..modes.Length - 1 do
+            let modeIndex = (order + repetition) % modes.Length
+            let milliseconds, allocated, nodeVisits = run modes.[modeIndex] true
+            times.[modeIndex].[repetition] <- milliseconds
+            allocations.[modeIndex].[repetition] <- allocated
+            visits.[modeIndex] <- nodeVisits
+            rates.[modeIndex].[repetition] <-
+                float nodeVisits / (milliseconds / 1000.0)
+
+    Array.init modes.Length (fun index ->
+        { Mode = modes.[index]
+          NodeVisits = visits.[index]
+          MedianMilliseconds = median times.[index]
+          MedianNodesPerSecond = median rates.[index]
+          MedianAllocated = median allocations.[index] })
+
+let runTwoPlayerFastPathBoundary actions depth iterations repetitions =
+    let modes =
+        [| SolverMode.CFR
+           SolverMode.CFRPlus
+           SolverMode.MCCFR
+           SolverMode.MCCFRPlus |]
+    let directTimes = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let publicTimes = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let directAllocations = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let publicAllocations = Array.init modes.Length (fun _ -> Array.zeroCreate repetitions)
+    let definitions = stage3Definitions actions depth
+    let deltaCapacity = stage4DeltaCapacity actions depth
+    let root = { Node = 0; Depth = 0; LastAction = 0 }
+
+    let runDirect mode measured =
+        let game = Stage4BenchmarkGame(actions, depth)
+        let table = PackedTable.create 2 definitions
+        let mutable utilitySum0 = 0.0
+        let mutable utilitySum1 = 0.0
+        let runIteration =
+            if (Mode.semantics mode).Traversal = Exhaustive then
+                let solver = ExhaustiveSolver(mode, game, table, depth, actions)
+                fun iteration -> solver.RunIteration(iteration, 0, root)
+            else
+                let solver =
+                    SampledSolver(
+                        mode,
+                        game,
+                        table,
+                        depth,
+                        actions,
+                        deltaCapacity,
+                        Random 1729
+                    )
+                fun iteration -> solver.RunIteration(iteration, 0, root)
+
+        for iteration in 1..100 do
+            let struct (utility0, utility1) = runIteration iteration
+            utilitySum0 <- utilitySum0 + utility0
+            utilitySum1 <- utilitySum1 + utility1
+
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+
+        for iteration in 101..iterations + 100 do
+            let struct (utility0, utility1) = runIteration iteration
+            utilitySum0 <- utilitySum0 + utility0
+            utilitySum1 <- utilitySum1 + utility1
+
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        GC.KeepAlive utilitySum0
+        GC.KeepAlive utilitySum1
+        let milliseconds = float (stopped - started) * 1000.0 / float Stopwatch.Frequency
+        if measured then milliseconds, allocated else 0.0, 0L
+
+    let runPublic mode measured =
+        let game = Stage4BenchmarkGame(actions, depth)
+        let solver =
+            Solver<BenchmarkState, Stage4BenchmarkGame>(
+                mode,
+                game,
+                definitions,
+                depth,
+                actions,
+                deltaCapacity,
+                1729
+            )
+
+        for iteration in 1..100 do
+            solver.RunIteration(iteration, 0, root) |> ignore
+
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+
+        for iteration in 101..iterations + 100 do
+            solver.RunIteration(iteration, 0, root) |> ignore
+
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        let milliseconds = float (stopped - started) * 1000.0 / float Stopwatch.Frequency
+        if measured then milliseconds, allocated else 0.0, 0L
+
+    for mode in modes do
+        runDirect mode false |> ignore
+        runPublic mode false |> ignore
+
+    for repetition in 0..repetitions - 1 do
+        for order in 0..modes.Length - 1 do
+            let modeIndex = (order + repetition) % modes.Length
+            let recordDirect () =
+                let milliseconds, allocated = runDirect modes.[modeIndex] true
+                directTimes.[modeIndex].[repetition] <- milliseconds
+                directAllocations.[modeIndex].[repetition] <- allocated
+            let recordPublic () =
+                let milliseconds, allocated = runPublic modes.[modeIndex] true
+                publicTimes.[modeIndex].[repetition] <- milliseconds
+                publicAllocations.[modeIndex].[repetition] <- allocated
+
+            if repetition &&& 1 = 0 then
+                recordDirect ()
+                recordPublic ()
+            else
+                recordPublic ()
+                recordDirect ()
+
+    Array.init modes.Length (fun index ->
+        let direct = median directTimes.[index]
+        let publicPath = median publicTimes.[index]
+        { Mode = modes.[index]
+          DirectMedianMilliseconds = direct
+          PublicMedianMilliseconds = publicPath
+          PublicOverDirect = publicPath / direct
+          DirectMedianAllocated = median directAllocations.[index]
+          PublicMedianAllocated = median publicAllocations.[index] })
+
 [<EntryPoint>]
 let main arguments =
     let counts = [| 2; 3; 4; 8; 16; 32 |]
@@ -470,4 +831,46 @@ let main arguments =
     printfn "| --- | ---: | ---: |"
     for result in runBoundaryComparison 4 5 20000 7 do
         printfn "| %s | %.3f | %d |" result.Variant result.MedianMilliseconds result.MedianAllocated
+    let stage4Actions = 4
+    let stage4Depth = 5
+    let stage4InfoSets = (stage3Definitions stage4Actions stage4Depth).Length
+    let stage4Slots = stage4InfoSets * stage4Actions
+    let stage4Capacity = stage4DeltaCapacity stage4Actions stage4Depth
+    let stage4CommonBytes = 16L * int64 stage4Depth * int64 stage4Actions + 4L * int64 stage4InfoSets
+    let stage4ExhaustiveBytes = stage4CommonBytes + 8L * int64 stage4Slots + 8L * int64 stage4InfoSets
+    let stage4SampledBytes = stage4CommonBytes + 8L * int64 stage4InfoSets + 12L * int64 stage4Capacity
+    printfn ""
+    printfn "## Stage 4 two-player public modes"
+    printfn ""
+    printfn "Interleaved seven-run medians; 4 actions, depth 5, 500 measured iterations after 100 warm-up iterations; seed 1729. Node visits count nonterminal actor queries."
+    printfn ""
+    printfn "| Mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |"
+    printfn "| --- | ---: | ---: | ---: | ---: |"
+    for result in runStage4Comparison stage4Actions stage4Depth 500 7 do
+        printfn "| %A | %d | %.3f | %.0f | %d |" result.Mode result.NodeVisits result.MedianMilliseconds result.MedianNodesPerSecond result.MedianAllocated
+    printfn ""
+    printfn "Workspace payload for the same 341-information-set, 1,364-slot fixture; sampled delta capacity is the exact 104 slots touched by its paired passes. Persistent tables and metadata are shared and excluded."
+    printfn ""
+    printfn "| Workspace | Payload bytes |"
+    printfn "| --- | ---: |"
+    printfn "| Exhaustive | %d |" stage4ExhaustiveBytes
+    printfn "| Sampled | %d |" stage4SampledBytes
+    printfn ""
+    printfn "Stage 5 two-player boundary check: seven interleaved medians compare each internal direct specialized solver with the public Stage 5 path on the same workload. A ratio near 1.0 means multiplayer dispatch and utility accounting add no material boundary cost."
+    printfn ""
+    printfn "| Mode | Direct median ms | Public median ms | Public/direct | Direct allocated bytes | Public allocated bytes |"
+    printfn "| --- | ---: | ---: | ---: | ---: | ---: |"
+    for result in runTwoPlayerFastPathBoundary stage4Actions stage4Depth 500 7 do
+        printfn "| %A | %.3f | %.3f | %.3f | %d | %d |" result.Mode result.DirectMedianMilliseconds result.PublicMedianMilliseconds result.PublicOverDirect result.DirectMedianAllocated result.PublicMedianAllocated
+    printfn ""
+    printfn "## Stage 5 three-player public modes"
+    printfn ""
+    printfn "Interleaved seven-run medians; 4 actions, depth 5, 500 measured iterations after 100 warm-up iterations; seed 1729. Node visits count nonterminal actor queries. Multiplayer sampled modes include their exact average-strategy sweep."
+    printfn ""
+    printfn "| Mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |"
+    printfn "| --- | ---: | ---: | ---: | ---: |"
+    for result in runStage5Comparison stage4Actions stage4Depth 500 7 do
+        printfn "| %A | %d | %.3f | %.0f | %d |" result.Mode result.NodeVisits result.MedianMilliseconds result.MedianNodesPerSecond result.MedianAllocated
+    printfn ""
+    printfn "The three-player solver owns two reusable 3-double utility buffers (48 bytes). Sampled modes additionally own one reusable 3-double exact-average reach vector (24 bytes); two-player solvers do not allocate that vector."
     0

@@ -1,4 +1,4 @@
-module internal EvolutionaryBayes.CFRCore
+module EvolutionaryBayes.CFRCore
 
 open System
 
@@ -68,6 +68,87 @@ type InfoSetDefinition =
     { Id: int
       Owner: int
       ActionCount: int }
+
+[<Struct>]
+type TrainingProgress =
+    { IterationsRun: int
+      IterationsCompleted: int
+      MeanUtilities: double[] }
+
+    member this.MeanUtility0 = this.MeanUtilities.[0]
+    member this.MeanUtility1 = this.MeanUtilities.[1]
+
+type TrainingStopReason =
+    | IterationLimit = 0
+    | ConvergenceTolerance = 1
+
+[<Struct>]
+type TrainingResult =
+    { IterationsRun: int
+      IterationsCompleted: int
+      MeanUtilities: double[]
+      StopReason: TrainingStopReason
+      ConvergenceError: double voption
+      ConvergenceChecks: int }
+
+    member this.MeanUtility0 = this.MeanUtilities.[0]
+    member this.MeanUtility1 = this.MeanUtilities.[1]
+
+    member this.Converged =
+        this.StopReason = TrainingStopReason.ConvergenceTolerance
+
+[<Struct>]
+type ConvergenceCheck =
+    { Tolerance: double
+      CheckEvery: int
+      RequiredConsecutiveChecks: int }
+
+module ConvergenceCheck =
+    let private isFinite value =
+        not (Double.IsNaN value || Double.IsInfinity value)
+
+    let internal validate check =
+        if not (isFinite check.Tolerance) || check.Tolerance < 0.0 then
+            invalidArg "check" "Convergence tolerance must be finite and non-negative."
+
+        if check.CheckEvery <= 0 then
+            invalidArg "check" "Convergence check interval must be positive."
+
+        if check.RequiredConsecutiveChecks <= 0 then
+            invalidArg "check" "Required consecutive convergence checks must be positive."
+
+    let create tolerance checkEvery =
+        let check =
+            { Tolerance = tolerance
+              CheckEvery = checkEvery
+              RequiredConsecutiveChecks = 1 }
+
+        validate check
+        check
+
+    let withConsecutiveChecks requiredChecks check =
+        let updated =
+            { check with
+                RequiredConsecutiveChecks = requiredChecks }
+
+        validate updated
+        updated
+
+module Convergence =
+    /// Error of one player's cumulative mean training utility from a known
+    /// value. For general games, prefer an exploitability or NashConv measure.
+    let utilityError player expectedValue =
+        if player < 0 then
+            invalidArg "player" "The player index cannot be negative."
+
+        if Double.IsNaN expectedValue || Double.IsInfinity expectedValue then
+            invalidArg "expectedValue" "Expected utility must be finite."
+
+        fun (progress: TrainingProgress) ->
+            if player >= progress.MeanUtilities.Length then
+                invalidArg "player" "The player index is outside this training result."
+
+            abs (progress.MeanUtilities.[player] - expectedValue)
 
 [<Struct>]
 type InfoSetMeta =
@@ -340,6 +421,38 @@ module Workspace =
         workspace.DeltaValues.[position] <- value
         workspace.DeltaCount <- position + 1
 
+    /// Drains a sampled delta log. Clipped updates are sorted and aggregated by
+    /// slot so each cumulative regret is clipped exactly once per boundary.
+    let applySampledDeltas clipped (regrets: double[]) workspace =
+        let count = workspace.DeltaCount
+
+        if clipped && count > 1 then
+            Array.Sort(workspace.DeltaIndices, workspace.DeltaValues, 0, count)
+
+        if clipped then
+            let mutable position = 0
+
+            while position < count do
+                let index = workspace.DeltaIndices.[position]
+                let mutable delta = workspace.DeltaValues.[position]
+                position <- position + 1
+
+                while position < count && workspace.DeltaIndices.[position] = index do
+                    delta <- delta + workspace.DeltaValues.[position]
+                    position <- position + 1
+
+                let updated = regrets.[index] + delta
+                regrets.[index] <- if updated < 0.0 then 0.0 else updated
+        else
+            let mutable position = 0
+
+            while position < count do
+                let index = workspace.DeltaIndices.[position]
+                regrets.[index] <- regrets.[index] + workspace.DeltaValues.[position]
+                position <- position + 1
+
+        resetDeltaLog workspace
+
 module Scalar =
     let inline private isFinite value =
         not (Double.IsNaN value || Double.IsInfinity value)
@@ -608,22 +721,90 @@ module Scalar =
         validateRow "destination" destination destinationOffset actionCount
         normalizeAverageUnchecked strategySums sumOffset actionCount destination destinationOffset
 
+/// Optional output purification. This returns a new probability row and never
+/// mutates solver tables or the supplied strategy.
+module Strategy =
+    let threshold cutoff (strategy: double[]) =
+        if isNull strategy then
+            nullArg "strategy"
+
+        if strategy.Length = 0 then
+            invalidArg "strategy" "A strategy must contain at least one action."
+
+        if Double.IsNaN cutoff
+           || Double.IsInfinity cutoff
+           || cutoff < 0.0
+           || cutoff > 1.0 then
+            invalidArg "cutoff" "The threshold must be finite and in [0, 1]."
+
+        let mutable total = 0.0
+        let mutable largestIndex = 0
+        let mutable largestProbability = -1.0
+        let mutable i = 0
+
+        while i < strategy.Length do
+            let probability = strategy.[i]
+
+            if Double.IsNaN probability
+               || Double.IsInfinity probability
+               || probability < 0.0
+               || probability > 1.0 then
+                invalidArg "strategy" "A strategy must contain finite probabilities in [0, 1]."
+
+            total <- total + probability
+
+            if probability > largestProbability then
+                largestProbability <- probability
+                largestIndex <- i
+
+            i <- i + 1
+
+        let tolerance = min 1e-9 (1e-12 * float strategy.Length)
+
+        if abs (total - 1.0) > tolerance then
+            invalidArg "strategy" "A strategy's probabilities must sum to one."
+
+        let purified = Array.copy strategy
+
+        if cutoff > 0.0 then
+            let mutable retainedTotal = 0.0
+            i <- 0
+
+            while i < purified.Length do
+                if purified.[i] < cutoff then
+                    purified.[i] <- 0.0
+                else
+                    retainedTotal <- retainedTotal + purified.[i]
+
+                i <- i + 1
+
+            if retainedTotal = 0.0 then
+                purified.[largestIndex] <- 1.0
+            else
+                i <- 0
+
+                while i < purified.Length do
+                    purified.[i] <- purified.[i] / retainedTotal
+                    i <- i + 1
+
+        purified
+
 [<Literal>]
 let ChanceActor = -1
 
-/// Minimal contract used by exhaustive traversal. Action indices are local,
-/// dense legal slots in 0 .. ActionCount(state) - 1.
-type IExhaustiveGame<'State> =
-    abstract TryGetTerminalUtility: state: 'State * targetPlayer: int * utility: byref<double> -> bool
+/// Minimal contract shared by exhaustive and sampled traversal. Action indices
+/// are local, dense legal slots in 0 .. ActionCount(state) - 1.
+type IGame<'State> =
+    abstract TerminalUtility: state: 'State * targetPlayer: int -> double voption
     abstract Actor: state: 'State -> int
     abstract InformationSetId: state: 'State -> int
     abstract ActionCount: state: 'State -> int
     abstract NextState: state: 'State * action: int -> 'State
     abstract ChanceProbability: state: 'State * action: int -> double
 
-/// Allocation-free-after-construction exhaustive CFR for two-player games.
-/// Kept internal until the sampled modes share the same public solver surface.
-type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
+/// Allocation-free-after-construction exhaustive CFR. Two-player vanilla CFR
+/// uses a one-pass specialization; other cases use target-player traversals.
+type internal ExhaustiveSolver<'State, 'Game when 'Game :> IGame<'State>>
     (mode: SolverMode, game: 'Game, table: PackedTable, maxDepth: int, maxActionCount: int) =
 
     let semantics = Mode.semantics mode
@@ -632,8 +813,8 @@ type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
         if semantics.Traversal <> Exhaustive then
             invalidArg "mode" "ExhaustiveSolver supports only CFR and CFRPlus."
 
-        if table.PlayerCount <> 2 then
-            invalidArg "table" "Stage 3 exhaustive traversal requires exactly two players."
+        if table.PlayerCount < 2 then
+            invalidArg "table" "CFR requires at least two players."
 
         if maxDepth <= 0 then
             invalidArg "maxDepth" "Maximum depth must be positive."
@@ -649,13 +830,11 @@ type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
             invalidOp "Chance probabilities must be finite and nonnegative."
 
     let rec traverse targetPlayer state ownReach externalReach depth =
-        let mutable terminalUtility = 0.0
-
         // This must precede every actor or information-set query: terminal
         // states are not required to define either value.
-        if game.TryGetTerminalUtility(state, targetPlayer, &terminalUtility) then
-            terminalUtility
-        else
+        match game.TerminalUtility(state, targetPlayer) with
+        | ValueSome utility -> utility
+        | ValueNone ->
             if depth >= maxDepth then
                 invalidOp "The game exceeded the solver's configured maximum depth."
 
@@ -738,18 +917,15 @@ type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
                 nodeValue
 
     let rec traverseTwoPlayerCfr state reach0 reach1 chanceReach averageWeight depth =
-        let mutable utility0 = 0.0
-
         // Terminal detection remains before actor and information-set access.
         // A terminal must expose both independent utilities.
-        if game.TryGetTerminalUtility(state, 0, &utility0) then
-            let mutable utility1 = 0.0
-
-            if not (game.TryGetTerminalUtility(state, 1, &utility1)) then
+        match game.TerminalUtility(state, 0) with
+        | ValueSome utility0 ->
+            match game.TerminalUtility(state, 1) with
+            | ValueSome utility1 -> struct (utility0, utility1)
+            | ValueNone ->
                 invalidOp "A terminal state did not expose both player utilities."
-
-            struct (utility0, utility1)
-        else
+        | ValueNone ->
             if depth >= maxDepth then
                 invalidOp "The game exceeded the solver's configured maximum depth."
 
@@ -876,15 +1052,80 @@ type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
     let beginTargetPass () =
         Workspace.beginAveragePass workspace.Common |> ignore
 
-    member _.Table = table
-    member internal _.Workspace = workspace
-
-    member _.RunIteration(iteration: int, burnIn: int, root: 'State) =
+    let validateIteration iteration burnIn =
         if iteration <= 0 then
             invalidArg "iteration" "Iteration numbers are one-based and must be positive."
 
         if burnIn < 0 then
             invalidArg "burnIn" "Burn-in cannot be negative."
+
+    let runGeneric iteration burnIn root (utilities: double[]) =
+        let averageWeight = Mode.averageWeight mode iteration burnIn
+
+        if semantics.UpdateSchedule = Simultaneous then
+            Workspace.beginExhaustivePass workspace |> ignore
+            let mutable targetPlayer = 0
+
+            while targetPlayer < table.PlayerCount do
+                beginTargetPass ()
+                utilities.[targetPlayer] <-
+                    traverse targetPlayer root averageWeight 1.0 0
+                targetPlayer <- targetPlayer + 1
+
+            applyTouched false
+        else
+            let mutable targetPlayer = 0
+
+            while targetPlayer < table.PlayerCount do
+                Workspace.beginExhaustivePass workspace |> ignore
+                beginTargetPass ()
+                utilities.[targetPlayer] <-
+                    traverse targetPlayer root averageWeight 1.0 0
+                applyTouched true
+                targetPlayer <- targetPlayer + 1
+
+    member _.Table = table
+    member internal _.Workspace = workspace
+
+    member _.RunIterationInto
+        (iteration: int, burnIn: int, root: 'State, utilities: double[])
+        =
+        validateIteration iteration burnIn
+
+        if isNull utilities then
+            nullArg "utilities"
+
+        if utilities.Length <> table.PlayerCount then
+            invalidArg "utilities" "The utility buffer length must equal the player count."
+
+        if table.PlayerCount = 2 then
+            let averageWeight = Mode.averageWeight mode iteration burnIn
+
+            if semantics.UpdateSchedule = Simultaneous then
+                Workspace.beginExhaustivePass workspace |> ignore
+                beginTargetPass ()
+                let struct (utility0, utility1) =
+                    traverseTwoPlayerCfr root 1.0 1.0 1.0 averageWeight 0
+                applyTouched false
+                utilities.[0] <- utility0
+                utilities.[1] <- utility1
+            else
+                Workspace.beginExhaustivePass workspace |> ignore
+                beginTargetPass ()
+                utilities.[0] <- traverse 0 root averageWeight 1.0 0
+                applyTouched true
+                Workspace.beginExhaustivePass workspace |> ignore
+                beginTargetPass ()
+                utilities.[1] <- traverse 1 root averageWeight 1.0 0
+                applyTouched true
+        else
+            runGeneric iteration burnIn root utilities
+
+    member _.RunIteration(iteration: int, burnIn: int, root: 'State) =
+        validateIteration iteration burnIn
+
+        if table.PlayerCount <> 2 then
+            invalidOp "Use RunIterationInto for games with more than two players."
 
         let averageWeight = Mode.averageWeight mode iteration burnIn
 
@@ -910,11 +1151,10 @@ type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
         if mode <> CFR then
             invalidOp "The target-pair reference is defined only for vanilla CFR."
 
-        if iteration <= 0 then
-            invalidArg "iteration" "Iteration numbers are one-based and must be positive."
+        if table.PlayerCount <> 2 then
+            invalidOp "The target-pair reference is defined only for two-player games."
 
-        if burnIn < 0 then
-            invalidArg "burnIn" "Burn-in cannot be negative."
+        validateIteration iteration burnIn
 
         let averageWeight = Mode.averageWeight mode iteration burnIn
         Workspace.beginExhaustivePass workspace |> ignore
@@ -924,3 +1164,763 @@ type ExhaustiveSolver<'State, 'Game when 'Game :> IExhaustiveGame<'State>>
         let utility1 = traverse 1 root averageWeight 1.0 0
         applyTouched false
         struct (utility0, utility1)
+
+/// Allocation-free-after-construction external-sampling MCCFR. Two-player
+/// games retain paired sampled passes; multiplayer games perform one exact
+/// average-strategy sweep followed by one sampled regret pass per player.
+type internal SampledSolver<'State, 'Game when 'Game :> IGame<'State>>
+    (
+        mode: SolverMode,
+        game: 'Game,
+        table: PackedTable,
+        maxDepth: int,
+        maxActionCount: int,
+        deltaCapacity: int,
+        random: Random
+    ) =
+
+    let semantics = Mode.semantics mode
+
+    do
+        if semantics.Traversal <> ExternalSampling then
+            invalidArg "mode" "SampledSolver supports only MCCFR and MCCFRPlus."
+
+        if table.PlayerCount < 2 then
+            invalidArg "table" "MCCFR requires at least two players."
+
+        if maxDepth <= 0 then
+            invalidArg "maxDepth" "Maximum depth must be positive."
+
+        if maxActionCount <= 0 then
+            invalidArg "maxActionCount" "Maximum action count must be positive."
+
+        if deltaCapacity <= 0 then
+            invalidArg "deltaCapacity" "Sampled delta capacity must be positive."
+
+        if isNull random then
+            nullArg "random"
+
+    let workspace =
+        Workspace.createSampled table.InfoSets.Length deltaCapacity maxDepth maxActionCount
+
+    // Only multiplayer MCCFR owns this extra workspace. The two-player fast
+    // path retains the Stage 4 memory layout.
+    let averageReaches =
+        if table.PlayerCount > 2 then
+            Array.create table.PlayerCount 1.0
+        else
+            Array.empty
+
+    let validateProbability probability =
+        if Double.IsNaN probability || Double.IsInfinity probability || probability < 0.0 then
+            invalidOp "Chance probabilities must be finite and nonnegative."
+
+    let nextDraw () =
+        let draw = random.NextDouble()
+
+        if Double.IsNaN draw || Double.IsInfinity draw || draw < 0.0 || draw >= 1.0 then
+            invalidOp "The random source returned a value outside [0, 1)."
+
+        draw
+
+    let appendRowDelta offset actionCount scratchOffset nodeValue =
+        let mutable action = 0
+
+        while action < actionCount do
+            Workspace.appendDelta
+                workspace
+                (offset + action)
+                (workspace.Common.Utilities.[scratchOffset + action] - nodeValue)
+            action <- action + 1
+
+    let rec traverse targetPlayer averageWeight state depth =
+        // Terminal states need not expose actor, information-set, or action data.
+        match game.TerminalUtility(state, targetPlayer) with
+        | ValueSome utility -> utility
+        | ValueNone ->
+            if depth >= maxDepth then
+                invalidOp "The game exceeded the solver's configured maximum depth."
+
+            let actor = game.Actor state
+            let actionCount = game.ActionCount state
+
+            if actionCount <= 0 || actionCount > maxActionCount then
+                invalidOp "A nonterminal state exposed an invalid action count."
+
+            let scratchOffset = depth * maxActionCount
+
+            if actor = ChanceActor then
+                let mutable probabilitySum = 0.0
+                let mutable action = 0
+
+                while action < actionCount do
+                    let probability = game.ChanceProbability(state, action)
+                    validateProbability probability
+                    workspace.Common.Strategies.[scratchOffset + action] <- probability
+                    probabilitySum <- probabilitySum + probability
+                    action <- action + 1
+
+                if abs (probabilitySum - 1.0) > 1e-12 then
+                    invalidOp "Chance probabilities must sum to one."
+
+                let sampledAction =
+                    Scalar.sampleUnchecked
+                        workspace.Common.Strategies
+                        scratchOffset
+                        actionCount
+                        (nextDraw ())
+
+                traverse
+                    targetPlayer
+                    averageWeight
+                    (game.NextState(state, sampledAction))
+                    (depth + 1)
+            elif actor < 0 || actor >= table.PlayerCount then
+                invalidOp "A nonterminal state returned an invalid actor."
+            else
+                let infoSetId = game.InformationSetId state
+
+                if infoSetId < 0 || infoSetId >= table.InfoSets.Length then
+                    invalidOp "A player state returned an invalid information-set ID."
+
+                let row = table.InfoSets.[infoSetId]
+
+                if row.Owner <> actor || row.ActionCount <> actionCount then
+                    invalidOp "The game state disagrees with its information-set metadata."
+
+                Scalar.regretMatchUnchecked
+                    table.Tables.Regrets
+                    row.Offset
+                    actionCount
+                    workspace.Common.Strategies
+                    scratchOffset
+
+                if actor = targetPlayer then
+                    let mutable nodeValue = 0.0
+                    let mutable action = 0
+
+                    while action < actionCount do
+                        let actionValue =
+                            traverse
+                                targetPlayer
+                                averageWeight
+                                (game.NextState(state, action))
+                                (depth + 1)
+                        workspace.Common.Utilities.[scratchOffset + action] <- actionValue
+                        nodeValue <-
+                            nodeValue
+                            + workspace.Common.Strategies.[scratchOffset + action] * actionValue
+                        action <- action + 1
+
+                    appendRowDelta row.Offset actionCount scratchOffset nodeValue
+                    nodeValue
+                else
+                    if workspace.Common.AverageEpochs.[infoSetId] <> workspace.Common.Epoch then
+                        workspace.Common.AverageEpochs.[infoSetId] <- workspace.Common.Epoch
+                        Scalar.accumulateAverageUnchecked
+                            averageWeight
+                            workspace.Common.Strategies
+                            scratchOffset
+                            actionCount
+                            table.Tables.StrategySums
+                            row.Offset
+
+                    let sampledAction =
+                        match Workspace.tryGetSample workspace infoSetId with
+                        | ValueSome action -> action
+                        | ValueNone ->
+                            let action =
+                                Scalar.sampleUnchecked
+                                    workspace.Common.Strategies
+                                    scratchOffset
+                                    actionCount
+                                    (nextDraw ())
+                            Workspace.setSample workspace infoSetId action
+                            action
+
+                    traverse
+                        targetPlayer
+                        averageWeight
+                        (game.NextState(state, sampledAction))
+                        (depth + 1)
+
+    let rec accumulateExactAverage averageWeight state depth =
+        match game.TerminalUtility(state, 0) with
+        | ValueSome _ -> ()
+        | ValueNone ->
+            if depth >= maxDepth then
+                invalidOp "The game exceeded the solver's configured maximum depth."
+
+            let actor = game.Actor state
+            let actionCount = game.ActionCount state
+
+            if actionCount <= 0 || actionCount > maxActionCount then
+                invalidOp "A nonterminal state exposed an invalid action count."
+
+            let scratchOffset = depth * maxActionCount
+
+            if actor = ChanceActor then
+                let mutable probabilitySum = 0.0
+                let mutable action = 0
+
+                while action < actionCount do
+                    let probability = game.ChanceProbability(state, action)
+                    validateProbability probability
+                    probabilitySum <- probabilitySum + probability
+                    accumulateExactAverage
+                        averageWeight
+                        (game.NextState(state, action))
+                        (depth + 1)
+                    action <- action + 1
+
+                if abs (probabilitySum - 1.0) > 1e-12 then
+                    invalidOp "Chance probabilities must sum to one."
+            elif actor < 0 || actor >= table.PlayerCount then
+                invalidOp "A nonterminal state returned an invalid actor."
+            else
+                let infoSetId = game.InformationSetId state
+
+                if infoSetId < 0 || infoSetId >= table.InfoSets.Length then
+                    invalidOp "A player state returned an invalid information-set ID."
+
+                let row = table.InfoSets.[infoSetId]
+
+                if row.Owner <> actor || row.ActionCount <> actionCount then
+                    invalidOp "The game state disagrees with its information-set metadata."
+
+                Scalar.regretMatchUnchecked
+                    table.Tables.Regrets
+                    row.Offset
+                    actionCount
+                    workspace.Common.Strategies
+                    scratchOffset
+
+                if workspace.Common.AverageEpochs.[infoSetId] <> workspace.Common.Epoch then
+                    workspace.Common.AverageEpochs.[infoSetId] <- workspace.Common.Epoch
+                    Scalar.accumulateAverageUnchecked
+                        (averageWeight * averageReaches.[actor])
+                        workspace.Common.Strategies
+                        scratchOffset
+                        actionCount
+                        table.Tables.StrategySums
+                        row.Offset
+
+                let previousReach = averageReaches.[actor]
+                let mutable action = 0
+
+                while action < actionCount do
+                    averageReaches.[actor] <-
+                        previousReach * workspace.Common.Strategies.[scratchOffset + action]
+                    accumulateExactAverage
+                        averageWeight
+                        (game.NextState(state, action))
+                        (depth + 1)
+                    action <- action + 1
+
+                averageReaches.[actor] <- previousReach
+
+    let beginTargetPass () =
+        Workspace.beginSampledPass workspace |> ignore
+        Workspace.beginAveragePass workspace.Common |> ignore
+
+    let validateIteration iteration burnIn =
+        if iteration <= 0 then
+            invalidArg "iteration" "Iteration numbers are one-based and must be positive."
+
+        if burnIn < 0 then
+            invalidArg "burnIn" "Burn-in cannot be negative."
+
+    let runMultiplayer iteration burnIn root (utilities: double[]) =
+        let averageWeight = Mode.averageWeight mode iteration burnIn
+
+        if averageWeight > 0.0 then
+            let mutable player = 0
+
+            while player < averageReaches.Length do
+                averageReaches.[player] <- 1.0
+                player <- player + 1
+
+            Workspace.beginAveragePass workspace.Common |> ignore
+            accumulateExactAverage averageWeight root 0
+
+        Workspace.resetDeltaLog workspace
+        let mutable targetPlayer = 0
+
+        while targetPlayer < table.PlayerCount do
+            Workspace.beginSampledPass workspace |> ignore
+            utilities.[targetPlayer] <- traverse targetPlayer 0.0 root 0
+
+            if semantics.UpdateSchedule = Alternating then
+                Workspace.applySampledDeltas true table.Tables.Regrets workspace
+
+            targetPlayer <- targetPlayer + 1
+
+        if semantics.UpdateSchedule = Simultaneous then
+            Workspace.applySampledDeltas false table.Tables.Regrets workspace
+
+    member _.Table = table
+    member internal _.Workspace = workspace
+
+    member _.RunIterationInto
+        (iteration: int, burnIn: int, root: 'State, utilities: double[])
+        =
+        validateIteration iteration burnIn
+
+        if isNull utilities then
+            nullArg "utilities"
+
+        if utilities.Length <> table.PlayerCount then
+            invalidArg "utilities" "The utility buffer length must equal the player count."
+
+        if table.PlayerCount = 2 then
+            let averageWeight = Mode.averageWeight mode iteration burnIn
+            Workspace.resetDeltaLog workspace
+            beginTargetPass ()
+            utilities.[0] <- traverse 0 averageWeight root 0
+
+            if semantics.UpdateSchedule = Alternating then
+                Workspace.applySampledDeltas true table.Tables.Regrets workspace
+
+            beginTargetPass ()
+            utilities.[1] <- traverse 1 averageWeight root 0
+            Workspace.applySampledDeltas
+                (semantics.RegretTransform = Clipped)
+                table.Tables.Regrets
+                workspace
+        else
+            runMultiplayer iteration burnIn root utilities
+
+    member _.RunIteration(iteration: int, burnIn: int, root: 'State) =
+        validateIteration iteration burnIn
+
+        if table.PlayerCount <> 2 then
+            invalidOp "Use RunIterationInto for games with more than two players."
+
+        let averageWeight = Mode.averageWeight mode iteration burnIn
+        Workspace.resetDeltaLog workspace
+        beginTargetPass ()
+        let utility0 = traverse 0 averageWeight root 0
+
+        if semantics.UpdateSchedule = Alternating then
+            Workspace.applySampledDeltas true table.Tables.Regrets workspace
+
+        beginTargetPass ()
+        let utility1 = traverse 1 averageWeight root 0
+        Workspace.applySampledDeltas
+            (semantics.RegretTransform = Clipped)
+            table.Tables.Regrets
+            workspace
+        struct (utility0, utility1)
+
+/// Finite sequential general-sum CFR solver. Construction selects a direct
+/// two-player fast path or the generic target-player schedule.
+type Solver<'State, 'Game when 'Game :> IGame<'State>>
+    (
+        mode: SolverMode,
+        game: 'Game,
+        playerCount: int,
+        definitions: InfoSetDefinition[],
+        maxDepth: int,
+        maxActionCount: int,
+        sampledDeltaCapacity: int,
+        random: Random
+    ) =
+
+    do
+        if playerCount < 2 then
+            invalidArg "playerCount" "CFR requires at least two players."
+
+    let table = PackedTable.create playerCount definitions
+    let semantics = Mode.semantics mode
+    let mutable iterationsCompleted = 0
+    let utilitySums = Array.zeroCreate playerCount
+    let iterationUtilities = Array.zeroCreate playerCount
+
+    let exhaustive =
+        if semantics.Traversal = Exhaustive then
+            ValueSome(ExhaustiveSolver(mode, game, table, maxDepth, maxActionCount))
+        else
+            ValueNone
+
+    let sampled =
+        if semantics.Traversal = ExternalSampling then
+            ValueSome(
+                SampledSolver(
+                    mode,
+                    game,
+                    table,
+                    maxDepth,
+                    maxActionCount,
+                    sampledDeltaCapacity,
+                    random
+                )
+            )
+        else
+            ValueNone
+
+    let runTwoPlayerIteration iteration burnIn root =
+        match exhaustive with
+        | ValueSome solver -> solver.RunIteration(iteration, burnIn, root)
+        | ValueNone ->
+            match sampled with
+            | ValueSome solver -> solver.RunIteration(iteration, burnIn, root)
+            | ValueNone -> invalidOp "The solver has no traversal implementation."
+
+    let runMultiplayerIteration iteration burnIn root =
+        match exhaustive with
+        | ValueSome solver ->
+            solver.RunIterationInto(iteration, burnIn, root, iterationUtilities)
+        | ValueNone ->
+            match sampled with
+            | ValueSome solver ->
+                solver.RunIterationInto(iteration, burnIn, root, iterationUtilities)
+            | ValueNone -> invalidOp "The solver has no traversal implementation."
+
+    let progress iterationsRun =
+        let denominator = float iterationsCompleted
+        let means = Array.zeroCreate playerCount
+        let mutable player = 0
+
+        while player < playerCount do
+            means.[player] <- utilitySums.[player] / denominator
+            player <- player + 1
+
+        { IterationsRun = iterationsRun
+          IterationsCompleted = iterationsCompleted
+          MeanUtilities = means }
+
+    let normalizedAverageProfile () =
+        let profile = Array.zeroCreate table.SlotCount
+        let mutable infoSetId = 0
+
+        while infoSetId < table.InfoSets.Length do
+            let row = table.InfoSets.[infoSetId]
+            Scalar.normalizeAverageUnchecked
+                table.Tables.StrategySums
+                row.Offset
+                row.ActionCount
+                profile
+                row.Offset
+            infoSetId <- infoSetId + 1
+
+        profile
+
+    let evaluateAverageTarget (profile: double[]) targetPlayer root =
+
+        let validateProbability probability =
+            if Double.IsNaN probability
+               || Double.IsInfinity probability
+               || probability < 0.0 then
+                invalidOp "Chance probabilities must be finite and nonnegative."
+
+        let rec evaluate state depth =
+            match game.TerminalUtility(state, targetPlayer) with
+            | ValueSome utility -> utility
+            | ValueNone ->
+                if depth >= maxDepth then
+                    invalidOp "The game exceeded the solver's configured maximum depth."
+
+                let actor = game.Actor state
+                let actionCount = game.ActionCount state
+
+                if actionCount <= 0 || actionCount > maxActionCount then
+                    invalidOp "A nonterminal state exposed an invalid action count."
+
+                let mutable value = 0.0
+                let mutable probabilitySum = 0.0
+                let mutable action = 0
+
+                if actor = ChanceActor then
+                    while action < actionCount do
+                        let probability = game.ChanceProbability(state, action)
+                        validateProbability probability
+                        probabilitySum <- probabilitySum + probability
+                        let actionValue =
+                            evaluate (game.NextState(state, action)) (depth + 1)
+                        value <- value + probability * actionValue
+                        action <- action + 1
+
+                    if abs (probabilitySum - 1.0) > 1e-12 then
+                        invalidOp "Chance probabilities must sum to one."
+                elif actor < 0 || actor >= table.PlayerCount then
+                    invalidOp "A nonterminal state returned an invalid actor."
+                else
+                    let currentInfoSetId = game.InformationSetId state
+
+                    if currentInfoSetId < 0
+                       || currentInfoSetId >= table.InfoSets.Length then
+                        invalidOp "A player state returned an invalid information-set ID."
+
+                    let row = table.InfoSets.[currentInfoSetId]
+
+                    if row.Owner <> actor || row.ActionCount <> actionCount then
+                        invalidOp "The game state disagrees with its information-set metadata."
+
+                    while action < actionCount do
+                        let probability = profile.[row.Offset + action]
+                        let actionValue =
+                            evaluate (game.NextState(state, action)) (depth + 1)
+                        value <- value + probability * actionValue
+                        action <- action + 1
+
+                value
+
+        evaluate root 0
+
+    let validateSequence iteration =
+        if iteration <> iterationsCompleted + 1 then
+            invalidArg
+                "iteration"
+                $"Expected iteration {iterationsCompleted + 1}; training iterations must be sequential."
+
+    let recordTwoPlayerIteration iteration burnIn root =
+        validateSequence iteration
+        let struct (utility0, utility1) as utilities =
+            runTwoPlayerIteration iteration burnIn root
+        iterationsCompleted <- iteration
+        utilitySums.[0] <- utilitySums.[0] + utility0
+        utilitySums.[1] <- utilitySums.[1] + utility1
+        utilities
+
+    let recordMultiplayerIteration iteration burnIn root =
+        validateSequence iteration
+        runMultiplayerIteration iteration burnIn root
+        iterationsCompleted <- iteration
+        let mutable player = 0
+
+        while player < playerCount do
+            utilitySums.[player] <-
+                utilitySums.[player] + iterationUtilities.[player]
+            player <- player + 1
+
+    let recordIteration iteration burnIn root =
+        if playerCount = 2 then
+            recordTwoPlayerIteration iteration burnIn root |> ignore
+        else
+            recordMultiplayerIteration iteration burnIn root
+
+    new
+        (
+            mode,
+            game,
+            definitions,
+            maxDepth,
+            maxActionCount,
+            sampledDeltaCapacity,
+            seed: int
+        ) =
+        Solver(
+            mode,
+            game,
+            2,
+            definitions,
+            maxDepth,
+            maxActionCount,
+            sampledDeltaCapacity,
+            Random(seed)
+        )
+
+    new
+        (
+            mode,
+            game,
+            definitions,
+            maxDepth,
+            maxActionCount,
+            sampledDeltaCapacity,
+            random: Random
+        ) =
+        Solver(
+            mode,
+            game,
+            2,
+            definitions,
+            maxDepth,
+            maxActionCount,
+            sampledDeltaCapacity,
+            random
+        )
+
+    new
+        (
+            mode,
+            game,
+            playerCount,
+            definitions,
+            maxDepth,
+            maxActionCount,
+            sampledDeltaCapacity,
+            seed: int
+        ) =
+        Solver(
+            mode,
+            game,
+            playerCount,
+            definitions,
+            maxDepth,
+            maxActionCount,
+            sampledDeltaCapacity,
+            Random(seed)
+        )
+
+    member _.Mode = mode
+    member _.PlayerCount = playerCount
+    member _.IterationsCompleted = iterationsCompleted
+    member internal _.Table = table
+
+    /// Evaluate both players' expected utilities under the normalized average
+    /// profile. This enumerates the complete game tree and is intended for
+    /// reporting, convergence checks, and small-game correctness oracles.
+    member _.EvaluateAverageProfile(root: 'State) =
+        if playerCount <> 2 then
+            invalidOp "Use EvaluateAverageProfileInto for games with more than two players."
+
+        let profile = normalizedAverageProfile ()
+        struct (
+            evaluateAverageTarget profile 0 root,
+            evaluateAverageTarget profile 1 root
+        )
+
+    /// Evaluate every player's utility under the normalized average profile.
+    /// Reporting may allocate the one flat normalized profile; traversal does
+    /// not allocate a utility vector at terminal states.
+    member _.EvaluateAverageProfileInto(root: 'State, utilities: double[]) =
+        if isNull utilities then
+            nullArg "utilities"
+
+        if utilities.Length <> playerCount then
+            invalidArg "utilities" "The utility buffer length must equal the player count."
+
+        let profile = normalizedAverageProfile ()
+        let mutable player = 0
+
+        while player < playerCount do
+            utilities.[player] <- evaluateAverageTarget profile player root
+            player <- player + 1
+
+    /// Run one two-player iteration and return its utilities without
+    /// allocating. Multiplayer callers use RunIterationInto or Train.
+    member _.RunIteration(iteration: int, burnIn: int, root: 'State) =
+        if playerCount <> 2 then
+            invalidOp "Use RunIterationInto for games with more than two players."
+
+        recordTwoPlayerIteration iteration burnIn root
+
+    /// Run one iteration for any player count into caller-owned storage.
+    member _.RunIterationInto
+        (iteration: int, burnIn: int, root: 'State, utilities: double[])
+        =
+        if isNull utilities then
+            nullArg "utilities"
+
+        if utilities.Length <> playerCount then
+            invalidArg "utilities" "The utility buffer length must equal the player count."
+
+        if playerCount = 2 then
+            let struct (utility0, utility1) =
+                recordTwoPlayerIteration iteration burnIn root
+            utilities.[0] <- utility0
+            utilities.[1] <- utility1
+        else
+            recordMultiplayerIteration iteration burnIn root
+            Array.Copy(iterationUtilities, utilities, playerCount)
+
+    /// Run a fixed number of additional iterations and return cumulative
+    /// mean utilities. The traversal remains allocation-free after warm-up.
+    member this.Train(iterations: int, burnIn: int, root: 'State) =
+        if iterations <= 0 then
+            invalidArg "iterations" "Training iteration count must be positive."
+
+        if burnIn < 0 then
+            invalidArg "burnIn" "Burn-in cannot be negative."
+
+        let mutable iterationsRun = 0
+
+        while iterationsRun < iterations do
+            recordIteration (iterationsCompleted + 1) burnIn root
+            iterationsRun <- iterationsRun + 1
+
+        let current = progress iterationsRun
+
+        { IterationsRun = current.IterationsRun
+          IterationsCompleted = current.IterationsCompleted
+          MeanUtilities = current.MeanUtilities
+          StopReason = TrainingStopReason.IterationLimit
+          ConvergenceError = ValueNone
+          ConvergenceChecks = 0 }
+
+    /// Train until a caller-supplied non-negative error is within tolerance,
+    /// or until maxIterations additional iterations have run. The error can
+    /// measure exploitability, NashConv, or distance from a known game value.
+    member this.TrainUntil
+        (
+            maxIterations: int,
+            burnIn: int,
+            root: 'State,
+            check: ConvergenceCheck,
+            measureError: TrainingProgress -> double
+        ) =
+        if maxIterations <= 0 then
+            invalidArg "maxIterations" "Maximum training iteration count must be positive."
+
+        if burnIn < 0 then
+            invalidArg "burnIn" "Burn-in cannot be negative."
+
+        if isNull (box measureError) then
+            nullArg "measureError"
+
+        ConvergenceCheck.validate check
+
+        let mutable iterationsRun = 0
+        let mutable checks = 0
+        let mutable consecutiveChecks = 0
+        let mutable lastError = ValueNone
+        let mutable converged = false
+
+        while iterationsRun < maxIterations && not converged do
+            recordIteration (iterationsCompleted + 1) burnIn root
+            iterationsRun <- iterationsRun + 1
+
+            if iterationsRun % check.CheckEvery = 0
+               || iterationsRun = maxIterations then
+                let error = measureError (progress iterationsRun)
+
+                if Double.IsNaN error || Double.IsInfinity error || error < 0.0 then
+                    invalidOp "The convergence error must be finite and non-negative."
+
+                checks <- checks + 1
+                lastError <- ValueSome error
+
+                if error <= check.Tolerance then
+                    consecutiveChecks <- consecutiveChecks + 1
+                    converged <-
+                        consecutiveChecks >= check.RequiredConsecutiveChecks
+                else
+                    consecutiveChecks <- 0
+
+        let current = progress iterationsRun
+
+        { IterationsRun = current.IterationsRun
+          IterationsCompleted = current.IterationsCompleted
+          MeanUtilities = current.MeanUtilities
+          StopReason =
+            if converged then
+                TrainingStopReason.ConvergenceTolerance
+            else
+                TrainingStopReason.IterationLimit
+          ConvergenceError = lastError
+          ConvergenceChecks = checks }
+
+    member _.AverageStrategy(infoSetId: int) =
+        if infoSetId < 0 || infoSetId >= table.InfoSets.Length then
+            invalidArg "infoSetId" "Information-set ID is outside the solver table."
+
+        let row = table.InfoSets.[infoSetId]
+        let strategy = Array.zeroCreate row.ActionCount
+        Scalar.normalizeAverageUnchecked
+            table.Tables.StrategySums
+            row.Offset
+            row.ActionCount
+            strategy
+            0
+        strategy

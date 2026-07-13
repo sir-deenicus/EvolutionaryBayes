@@ -351,6 +351,34 @@ If the denominator is zero, the reporting code should return a uniform
 distribution over legal actions. `getStrategyMasked` is not an average-policy
 function: it derives the current policy from `regretSum`.
 
+### Optional output thresholding
+
+`Strategy.threshold` can purify a normalized strategy for reporting,
+serialization, or gameplay. For a caller-selected cutoff $\tau$, it produces a
+new row
+
+$$
+\widehat\sigma(I,a)=
+\begin{cases}
+0, & \bar\sigma(I,a)<\tau,\\
+\bar\sigma(I,a)/Z, & \bar\sigma(I,a)\ge\tau,
+\end{cases}
+\qquad
+Z=\sum_{a:\bar\sigma(I,a)\ge\tau}\bar\sigma(I,a).
+$$
+
+If the cutoff removes every action, the helper deterministically retains the
+first maximum-probability action. A zero cutoff returns an unchanged copy. The
+input row and the solver's `StrategySums` are never mutated.
+
+Thresholding is deliberately outside training and is disabled unless the
+caller requests it. It cleans very small probabilities but can worsen
+exploitability and remove the original equilibrium guarantee. It is not action
+pruning and does not reduce traversal work. The unthresholded average strategy
+remains the canonical solver result. There is no strategy-sum reset operation;
+fixed burn-in suppresses early accumulation without introducing another state
+transition.
+
 ## 11. Sampling a legal action
 
 `sampleIndex` is used by the sampled traversal. It:
@@ -588,20 +616,75 @@ For correct use:
 ## 16. Future work and improvements
 
 The redesign is a small, allocation-free CFR/MCCFR core rather than a large
-framework. Stages 1 through 3a are implemented: the legacy traversals have a
-reproducible safety net, an internal flat scalar storage/kernel layer exists
-beside them, and the new exhaustive two-player general-sum CFR/CFR+ solver is
-the deterministic oracle for later sampled modes. Vanilla two-player CFR now
-returns both utilities from one exhaustive pass, while CFR+ retains its
-alternating target passes. Later traversal stages will support $N$-player, general-sum games, while treating
-two-player general-sum games as the primary optimized path. No special storage,
-solver, or scheduling support will be added for graphical, polymatrix, or
-hypergraphical games.
+framework. Stages 1 through 5 are implemented: the legacy traversals have a
+reproducible safety net, the packed scalar core supports exhaustive and sampled
+workspaces, and the general-sum `Solver` exposes CFR, CFR+, MCCFR, and MCCFR+
+for any finite player count of at least two. It also owns fixed-budget and
+tolerance-driven training loops with cumulative per-player progress reporting.
+Vanilla two-player CFR returns both utilities from one exhaustive pass, CFR+
+retains two direct alternating target passes, and both two-player sampled modes
+retain paired external-sampling target traversals. Multiplayer modes use one
+target regret pass per player; multiplayer MCCFR first performs the exact
+average-strategy sweep described below. No special storage, solver, or
+scheduling support is planned for graphical, polymatrix, or hypergraphical
+games.
 
-The future public API will expose CFR, CFR+, MCCFR, and MCCFR+ as distinct
-solver modes. The Stage 2 internal core already centralizes these four modes,
-but the unchanged public `cfr` and `cfrSampled` functions still always apply
-CFR+ regret clipping and linear averaging.
+The legacy public `cfr` and `cfrSampled` functions remain until the Stage 6
+cutover and still always apply CFR+ regret clipping and linear averaging. New
+code can instead select one of the four explicit `SolverMode` cases without a
+Boolean `plus` or `sampled` switch.
+
+Large-game work remains outside the production-core stages. A game adapter may
+first apply an optional exact, lossless canonicalization under its own game
+automorphisms. For board games, that adapter transforms the acting player's
+complete observable history and legal actions to a canonical rotation or
+reflection. It must preserve ordered public history and the acting player's
+private observation; canonicalizing only the current board would incorrectly
+erase information conveyed by move order. Precomputed bitboard and action
+permutations can keep this game-specific layer small and allocation-free. The
+game adapter or shared game library owns the geometry, canonical choice, and
+both directions of the action mapping. The CFR core and generic abstraction
+extension remain symmetry-unaware and receive only dense, action-aligned rows;
+neural adapters likewise encode canonical inputs and map outputs back to
+concrete actions.
+
+Lossy coarse graining will use a caller-supplied pure function from an
+observable information state to an abstract key. The extension will lazily
+intern those keys to the dense integer rows expected by the packed core. A
+small resolver interface will exist only as the common boundary for stateful
+assignment strategies; nearest-neighbor assignment will be the second
+abstraction option.
+It will use caller-supplied features, distance, and an acceptance threshold,
+and will never add distance calculations to the packed traversal hot path.
+
+Outcome-sampling MCCFR is also future work for games whose branching factor
+makes external sampling impractical. It will be an explicit sampling choice,
+with exploration, importance weighting, variance, and convergence tested
+against external sampling rather than silently changing the meaning of the
+existing `MCCFR` modes.
+
+Neural function approximation will live in a separate library extension so
+the allocation-free tabular core acquires no tensor or training dependencies.
+The extension will support two deliberately small model families:
+
+1. a history transformer that predicts counterfactual advantages from the
+   acting player's observable event history and uses a separate model for the
+   mandatory average strategy; and
+2. a spatial convolution-transformer hybrid that converts a 2D or 3D board to
+   per-cell features before attention combines them with move-history and
+   private-information tokens.
+
+The planned validation-game ladder is hidden-information $3\times3$
+tic-tac-toe, hidden-information $4\times4$ tic-tac-toe,
+hidden-information $3\times3\times3$ tic-tac-toe, Mini Hold'em, Mini-Jotto,
+five-letter Jotto, Mini-Scrabble, and finally two-player Scrabble. The full
+design, correctness conditions, and proposed delivery order are in
+[CFR Large-Game Extension Proposal](CFR_LARGE_GAME_PROPOSAL.md).
+
+The three tic-tac-toe variants will ship as one Incomplete Tic-Tac-Toe game
+for Android and the web. Mini Hold'em will ship as a web game and a terminal
+console application; "console" here means a command-line UI, not a game-console
+platform.
 
 ### Stage summary
 
@@ -615,13 +698,13 @@ stage requires an unfinished public mode to remain exposed.
 | 2 | Flat scalar core — completed 2026-07-12 | Dense player-scoped information sets, packed SoA tables, scalar kernels, and reusable workspaces exist beside the unchanged public solver. |
 | 3 | Exhaustive two-player solver - completed 2026-07-12 | An internal target-utility, two-player general-sum implementation of `CFR` and `CFRPlus` is correct, allocation-free after warm-up, and is the oracle for small games. |
 | 3a | Immediate exhaustive hot-path optimization - completed 2026-07-12 | Vanilla two-player CFR returns both utilities from one traversal and exhaustive regret application clears deltas in the same slot pass. A proposed unchecked touch helper was benchmarked and rejected. |
-| 4 | Sampled two-player solver | `MCCFR` and `MCCFRPlus` share the same tables and kernels; all four modes are then exposed through one public API. |
-| 5 | $N$-player and chance completion | Every mode supports finite sequential $N$-player general-sum games and explicit chance nodes without slowing the selected two-player path. |
+| 4 | Sampled two-player solver - completed 2026-07-13 | `MCCFR` and `MCCFRPlus` share the packed tables and scalar kernels with exhaustive modes; all four modes are exposed through one public `Solver`. |
+| 5 | $N$-player and chance completion - completed 2026-07-13 | Every mode supports finite sequential $N$-player general-sum games and explicit chance nodes while retaining the selected two-player path. |
 | 6 | Production cutover | The legacy recursive implementation is removed from production, the minimal API is frozen, and memory, allocation, convergence, and migration checks pass. |
 | 7 | Profile-guided single-thread optimization | Small-action scalar fast paths and, only where profitable, isolated SIMD kernels improve measured throughput without changing the design. |
 | 8 | Optional deterministic parallel batches | Parallel MCCFR is added only if representative workloads justify its complexity and it passes reproducibility and memory gates. |
 
-Stage 3a passed before Stage 4 began. Stages 1 through 6 define the required
+Stage 5 passed before Stage 6 began. Stages 1 through 6 define the required
 production core. Stage 7 may legitimately
 end with scalar code if SIMD does not win. Stage 8 may legitimately end with a
 documented no-go result; parallel execution is not required to consider the
@@ -633,14 +716,13 @@ The current implementation infers the player from `depth % 2` and changes
 utility perspective by negating recursive results. Those operations restrict it
 to two-player, alternating, zero-sum games.
 
-The exhaustive solver receives the acting player from the game state
-and always evaluates utility for one designated target player. Its minimal
-internal contract is:
+The solver receives the acting player from the game state and evaluates utility
+for a designated target player. Its public game contract is:
 
 ```fsharp
-type IExhaustiveGame<'State> =
-    abstract TryGetTerminalUtility:
-        state:'State * targetPlayer:int * utility:byref<double> -> bool
+type IGame<'State> =
+    abstract TerminalUtility:
+        state:'State * targetPlayer:int -> double voption
     abstract Actor: state:'State -> int
     abstract InformationSetId: state:'State -> int
     abstract ActionCount: state:'State -> int
@@ -648,14 +730,19 @@ type IExhaustiveGame<'State> =
     abstract ChanceProbability: state:'State * localAction:int -> double
 ```
 
-`Actor` currently returns player zero, player one, or the reserved
-`ChanceActor = -1`; every other value is rejected. Stage 5 will generalize the
-same rule to a player in $0,\ldots,N-1$ or the reserved integer for chance.
+`Actor` returns a player in $0,\ldots,N-1$ or the reserved
+`ChanceActor = -1`; every other value is rejected.
 `InformationSetId` is read only at player nodes. Every integer in
 `0 .. actionCount state - 1` is a legal local action, so the core does not need
 to allocate or scan a Boolean action mask. At a chance node,
 `chanceProbability` supplies a normalized fixed distribution; chance has no
 regret or average-strategy row.
+
+`TerminalUtility` returns `ValueSome utility` for a terminal state and
+`ValueNone` otherwise. `ValueOption` keeps the single-call terminal test
+allocation-free without forcing every F# game adapter to declare a mutable
+local and pass it by reference. Ordinary `option` is not used in this hot path
+because `Some` would allocate.
 
 The recursive function is conceptually
 
@@ -664,9 +751,9 @@ traverse targetPlayer state
 ```
 
 and returns that target player's utility at every depth. Child values are
-propagated directly rather than negated. Stage 3 supports:
+propagated directly rather than negated. The production traversal supports:
 
-- two players now, with the same target-utility structure intended for $N$ players in Stage 5;
+- any player count $N\ge2$;
 - general-sum terminal utilities;
 - consecutive turns by the same player;
 - arbitrary player order determined by the game state.
@@ -675,7 +762,7 @@ Information-set IDs must be unique across players. Private observations,
 public history, and player identity are the game's responsibility when mapping
 a state to a dense integer ID.
 
-For an eventual $N$-player game, one traversal is performed for each target
+For an $N$-player game, one traversal is performed for each target
 player whose regrets are being updated. The optimized vanilla two-player CFR
 path instead returns both utilities in one value tuple and updates the acting
 player's regret while retaining the deferred, simultaneous application
@@ -740,6 +827,75 @@ player updates. `MCCFRPlus` remains explicitly identified as a sampled CFR+
 variant, with the variance and convergence caveats described earlier in this
 document. Exhaustive CFR also serves as the deterministic correctness oracle
 against which both sampled implementations can be tested.
+
+### Training and convergence checks
+
+`Solver` owns the ordinary training loop. `Train(iterations, burnIn, root)`
+runs a fixed additional budget, continues from prior calls, and returns a
+`TrainingResult` containing the iterations run, total iterations completed,
+and a `MeanUtilities` array with one cumulative mean per player. The
+`MeanUtility0` and `MeanUtility1` members remain convenient aliases for the
+primary two-player case. The allocation-free tuple-returning `RunIteration`
+remains available for two-player specialized loops; multiplayer callers use
+`RunIterationInto` with a caller-owned $N$-element buffer. Iteration numbers
+must be sequential. This prevents a skipped or repeated index from silently
+changing CFR+ linear weights or burn-in behavior.
+
+`TrainUntil(maxIterations, burnIn, root, check, measureError)` adds periodic
+convergence checks. The caller supplies a non-negative error measure $e_t$;
+training stops when
+
+$$
+e_t \le \varepsilon,
+$$
+
+where $\varepsilon$ is `ConvergenceCheck.Tolerance`, or when the iteration
+budget is exhausted. `CheckEvery` limits expensive profile evaluation, and
+`RequiredConsecutiveChecks` can require the condition at several consecutive
+checkpoints before stopping. The final iteration is always checked even when
+the budget is not a multiple of the interval. Results state explicitly whether
+the tolerance or iteration limit stopped training and retain the last error.
+
+The core deliberately does not call utility stability “convergence.” A generic
+extensive-form solver cannot infer equilibrium convergence from a flat reward
+trace or small policy changes. For two-player zero-sum games, the supplied
+measure should normally be exact or bounded exploitability; for broader game
+classes it can be NashConv or another game-appropriate residual. When a small
+test game has a known value $v^*$, `Convergence.utilityError` provides the
+weaker regression measure
+
+$$
+e_t = \left|\bar u_i^{(t)}-v^*\right|.
+$$
+
+This checks agreement with a known value but does not prove that the learned
+profile is unexploitable. In sampled modes it is also noisy, so independent or
+consecutive checks are preferable to trusting one accidental threshold
+crossing.
+
+```fsharp
+let check =
+    ConvergenceCheck.create 1e-3 1_000
+    |> ConvergenceCheck.withConsecutiveChecks 3
+
+let result =
+    solver.TrainUntil(
+        100_000,
+        burnIn,
+        root,
+        check,
+        fun _ -> exploitability solver)
+```
+
+`EvaluateAverageProfile(root)` performs an exact full-tree evaluation of the
+normalized average profile and returns the two-player result as a struct tuple.
+`EvaluateAverageProfileInto(root, utilities)` provides the same operation for
+any player count using caller-owned output. Both normalize directly from the
+packed strategy sums into one flat temporary profile and request one target
+utility at a time, so no payoff vector is constructed at terminal nodes. These
+are explicit reporting operations: their time is proportional to the complete
+game tree and to the number of requested players, so large games should use a
+game-appropriate sampled evaluator instead.
 
 For a target-player exhaustive traversal, only two reach products are needed
 even in an $N$-player game:
@@ -846,7 +1002,20 @@ It also owns reusable append-only `DeltaIndices` and `DeltaValues` buffers.
 They hold only target slots touched by the sampled passes, allowing vanilla
 MCCFR to defer both players' updates until the simultaneous iteration boundary
 without allocating the exhaustive `double[M]` delta array. MCCFR+ drains and
-reuses the same buffers after each alternating target pass.
+reuses the same buffers after each alternating target pass. Before a clipped
+boundary, the log is sorted by slot and duplicate contributions are summed, so
+each cumulative regret is clipped exactly once after its complete aggregate.
+Signed MCCFR can drain entries directly because addition commutes.
+
+For $N>2$, sampled modes additionally own one `double[N]` reach vector. Before
+the target regret passes, an exact full-tree sweep computes the start-of-
+iteration strategy and accumulates every player's average row with that
+player's own realization reach. The sweep mutates one reach component on
+descent and restores it on return; it never allocates a reach vector per node.
+The subsequent sampled target traversals do no average accumulation. This is
+simple and gives every player the same profile boundary, but the exact sweep
+can dominate multiplayer MCCFR runtime. Two-player solvers do not allocate the
+extra reach vector and retain the Stage 4 paired estimator.
 
 All caches use integer epochs. Advancing past `Int32.MaxValue` explicitly
 clears the associated epoch array and restarts at epoch one, preventing a stale
@@ -858,8 +1027,9 @@ An exhaustive solver does not allocate the sampled cache, and a sampled solver
 does not allocate the dense exhaustive delta array. Mode selection occurs at
 the iteration entry point, not at every node.
 
-The hot path should allocate no arrays, strings, tuples, closures, or dictionary
-entries after solver initialization and initial depth-capacity warm-up.
+The hot path allocates no arrays, strings, tuples, closures, or dictionary
+entries after solver initialization and workspace warm-up for a value-type
+state and non-allocating game callbacks.
 
 ### Memory efficiency
 
@@ -1221,14 +1391,16 @@ games. It supports both signed-regret CFR and alternating-update CFR+, explicit
 chance, consecutive turns, and two independent terminal utilities. It becomes
 the deterministic correctness oracle for later stages.
 
-**Implemented result.** `CFRCore.fs` now contains the generic internal
-`IExhaustiveGame<'State>` contract, reserved `ChanceActor`, and
-`ExhaustiveSolver<'State,'Game>`. The solver uses direct target utilities,
-explicit actors and chance, legal local action slots, reusable depth slices,
+**Implemented result.** Stage 3 introduced the generic internal game contract,
+reserved `ChanceActor`, and `ExhaustiveSolver<'State,'Game>`; Stage 4 renamed
+the shared contract to public `IGame<'State>`. The exhaustive solver uses
+direct target utilities, explicit actors and chance, legal local action slots,
+reusable depth slices,
 epoch-guarded average accumulation, and the Stage 2 packed tables. CFR defers
 both players' aggregate regret deltas to a simultaneous boundary; CFR+ applies
 and clips one complete target pass before traversing the other player. The
-legacy public API remains unchanged until Stage 4 supplies the sampled modes.
+legacy functions remain unchanged, while Stage 4 adds the four-mode `Solver`
+beside them.
 Correctness, allocation, memory, and interleaved throughput evidence is in
 [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
@@ -1375,10 +1547,10 @@ simultaneous-update semantics are preserved.
 4. Chance nodes enumerate the fixed distribution once, weight both returned
    utilities by the same chance probability, and multiply chance reach for
    descendant counterfactual updates.
-5. The solver selects the specialization only for `CFR` with exactly two players.
-   `CFRPlus` remains on two alternating target passes. When Stage 5 enables more than
-   two players, vanilla CFR uses one target pass per player rather than growing
-   a dynamic utility-vector hot path.
+5. The solver selects the specialization only for `CFR` with exactly two
+   players. `CFRPlus` remains on two alternating target passes. Stage 5 uses
+   one target pass per player for multiplayer vanilla CFR rather than growing a
+   dynamic utility-vector hot path.
 6. Regret application and delta clearing are fused for every exhaustive mode. For
    each touched action slot perform
 
@@ -1438,22 +1610,32 @@ selection, the checked path must remain available, and the trusted path is kept
 only if its end-to-end benefit clears the Stage 7 merge gate. Small-action
 unrolling, generic-loop tuning, and SIMD also remain explicitly in Stage 7.
 
-#### Stage 4: add two-player MCCFR and MCCFR+
+#### Stage 4: add two-player MCCFR and MCCFR+ - completed 2026-07-13
 
 **Milestone outcome.** All four modes work for two-player general-sum games
 through one table layout and one public solver API. External sampling is the
 published pure-strategy sampling scheme, not independent resampling at repeated
 information sets.
 
+**Implemented result.** `Solver<'State,'Game>` accepts one of the four public
+`SolverMode` cases and selects the internal exhaustive or sampled implementation
+at the iteration boundary. It accepts dense information-set definitions,
+maximum depth and action count, sampled-delta capacity, and either a seed or a
+caller-owned `Random`. The sampled traversal expands target actions, samples
+one non-target or chance action, caches non-target actions by information-set
+epoch, and returns each target player's own general-sum utility estimate.
+Exhaustive and sampled solvers share the packed tables, mode semantics, scalar
+kernels, validation contract, and normalized average-strategy reporting.
+
 **Implementation work.**
 
-1. Add a second short target-player traversal. At the target player's nodes it
+1. Added a second short target-player traversal. At the target player's nodes it
    expands every local action; at the other player's nodes and chance nodes it
    samples one action.
-2. Cache the sampled action by non-target information-set ID and traversal
+2. Cached the sampled action by non-target information-set ID and traversal
    epoch. Reuse it whenever that information set is encountered again in the
    same traversal. Chance is sampled from its fixed distribution.
-3. Use the sampled counterfactual regret update
+3. Used the sampled counterfactual regret update
 
    $$
    \Delta R_i(I,a)
@@ -1463,19 +1645,20 @@ information sets.
    without multiplying by external reach again. Apply signed or clipped
    accumulation according to the mode, at the same pass boundaries defined in
    Stage 2.
-4. For the optimized two-player path, accumulate the other player's average
+4. For the optimized two-player path, accumulated the other player's average
    strategy at sampled non-target nodes. The paired traversal then accumulates
    the first player's average. Keep this standard two-player estimator separate
    from the generic $N$-player averaging rule introduced in Stage 5.
-5. Select exhaustive versus sampled traversal once in the public iteration
+5. Selected exhaustive versus sampled traversal once in the public iteration
    entry point. Regret matching, row metadata, terminal semantics, strategy
    sums, and reporting remain shared.
-6. Accept a deterministic seed or caller-owned random source at construction.
-   Reject an invalid target, a non-normalized chance row, an empty action row,
-   or a sampled probability outside $[0,1]$ at the checked boundary.
-7. Promote the final public `SolverMode` with exactly `CFR`, `CFRPlus`,
-   `MCCFR`, and `MCCFRPlus`. At this stage construction explicitly requires
-   `PlayerCount = 2`; Stage 5 removes that temporary restriction.
+6. Accepted a deterministic seed or caller-owned random source at construction.
+   The public API does not expose a target argument. It rejects a non-normalized
+   chance row, an empty action row, a random draw outside $[0,1)$, inconsistent
+   metadata, or an exhausted fixed-capacity sampled delta log.
+7. Promoted the final public `SolverMode` with exactly `CFR`, `CFRPlus`,
+   `MCCFR`, and `MCCFRPlus`. Stage 4 construction required two players; Stage 5
+   removed that temporary restriction without changing the mode set.
 
 **Verification.**
 
@@ -1504,66 +1687,86 @@ regret estimates pass the statistical comparison with exhaustive CFR; the
 public API has no Boolean “plus” or “sampled” switches; and no traversal
 contains a per-node branch over the four modes.
 
-#### Stage 5: complete $N$-player, general-sum, and chance support
+**Exit result.** Passed. The statistical test uses six observed standard errors,
+the repeated-information-set and aggregate-clipping regressions pass, every
+mode reports normalized averages, and 10,000 warmed iterations of each sampled
+mode allocate zero bytes. The separate Stage 4 benchmark is recorded in
+[`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
+
+#### Stage 5: complete $N$-player, general-sum, and chance support - completed 2026-07-13
 
 **Milestone outcome.** The same four modes accept any finite number of players
 in a sequential perfect-recall extensive-form game. The construction-time
 two-player specialization remains the primary fast path, and graph structure
 remains entirely outside the solver.
 
+**Implemented result.** Construction now accepts `playerCount >= 2`. The public
+solver keeps direct allocation-free tuple operations for two players and adds
+caller-buffer `RunIterationInto` and `EvaluateAverageProfileInto` operations
+for multiplayer use. `Train` and `TrainUntil` work for every player count and
+return one cumulative mean per player in `MeanUtilities`.
+
 **Implementation work.**
 
-1. Generalize the target loop to `0 .. playerCount - 1` and validate
+1. Generalized the target loop to `0 .. playerCount - 1` and validated
    `playerCount >= 2`. Each target traversal still carries only
    `ownReach` and combined `externalReach`; it never allocates an
    $N$-element reach vector in the regret hot path.
-2. Request terminal utility only for the active target player. This permits
+2. Requested terminal utility only for the active target player. This permits
    arbitrary general-sum payoff vectors without constructing a payoff array at
    every terminal state.
-3. Preserve a construction-selected two-player entry point that makes exactly
-   two direct target calls and selects one component of a struct terminal
-   payoff. The generic player loop is not executed by that path.
-4. Keep exhaustive averaging target-local and exact. For two-player external
-   sampling, retain the fast paired-pass estimator from Stage 4.
-5. For $N>2$ external sampling, perform one exact average-strategy sweep before
+3. Preserved direct two-player iteration entry points. Vanilla CFR still
+   returns both utilities from one specialized traversal; CFR+ and both sampled
+   modes still make exactly two direct target calls. No generic player loop or
+   game-kind branch appears in their recursive hot paths.
+4. Kept exhaustive averaging target-local and exact. Two-player external
+   sampling retains the fast paired-pass estimator from Stage 4.
+5. For $N>2$ external sampling, performed one exact average-strategy sweep before
    the first target-player regret pass. All players therefore contribute the
    same start-of-iteration profile. The sweep reuses one mutable $N$-reach array
-   with
-   multiply/restore backtracking and an information-set epoch; it does not
+   with multiply/restore backtracking and an information-set epoch; it does not
    allocate a reach vector per node. This deliberately favors a simple,
    unambiguous average over a more complex stochastic weighting estimator.
-   Document that this exact sweep can dominate the cost of sampled regret
-   updates in multiplayer games. Multiplayer is supported correctly, but is
-   not the primary MCCFR performance target.
-6. Validate the mechanically checkable finite-game invariants: every visited
+   The exact sweep can dominate sampled regret updates in multiplayer games;
+   multiplayer correctness is supported, but it is not the primary MCCFR
+   performance target.
+6. Validated the mechanically checkable finite-game invariants: every visited
    nonterminal state has exactly one actor, information-set ownership and row
    length are stable, and chance probabilities are non-negative and sum to one.
-   Perfect recall remains a documented caller obligation; an exhaustive
-   validator may check small test games, but the solver cannot prove it cheaply
-   for a large procedural game.
-7. State the result contract precisely: CFR minimizes counterfactual regret,
+   Perfect recall remains a documented caller obligation because the solver
+   cannot prove it cheaply for a large procedural game.
+7. Kept the result contract precise: CFR minimizes counterfactual regret,
    but outside two-player zero-sum classes the reported average independent
    strategies are not advertised as converging to a Nash equilibrium.
 
 **Verification.**
 
-- A three-player general-sum fixture has hand-computed target utilities and
-  regret deltas for every player.
-- A fixture contains consecutive turns, a skipped player, and player order
-  unrelated to depth; all values remain correct.
-- Player-scoped information sets with identical local observations remain
-  distinct.
-- Exhaustive chance values match direct enumeration; sampled chance values are
-  unbiased within statistical tolerance.
-- The $N$-player exact averaging sweep matches a direct calculation of
-  reach-weighted strategy sums.
-- The Stage 4 two-player benchmarks select the specialized path and show no
-  material throughput or allocation regression.
+- A three-player additive general-sum fixture gives exact utilities
+  $[2,1,2]$ and hand-computed signed regrets
+  $[-1,1,3,-3,-3,3]$ after one uniform iteration. All four modes match; plus
+  modes produce the corresponding clipped rows.
+- A second fixture exercises consecutive player-two turns while players zero
+  and one are skipped; another starts with player two, so actor order is
+  unrelated to depth.
+- Three-player exhaustive chance matches direct enumeration. Fifty thousand
+  sampled iterations per MCCFR mode match all three expected utilities within
+  the statistical tolerance.
+- The exact sampled averaging sweep matches the direct own-reach calculation
+  $[0.8,0.2,0.4,0.4]$ on a downstream same-player decision.
+- All four modes allocate zero bytes across 10,000 warmed three-player
+  iterations with value-type states and caller-owned utility output.
+- The Stage 4 benchmark retains exact two-player node counts and zero
+  allocation. A separate seven-run interleaved boundary comparison checks the
+  public Stage 5 path against the direct internal two-player specialization;
+  complete results are in
+  [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
-**Exit criteria.** Every mode passes two-player and three-player tests, all
+**Exit result.** Every mode passes two-player and three-player tests, all
 general-sum utilities retain their requested perspective, explicit chance works
-in exhaustive and sampled traversal, and the documented two-player fast path is
-still selected without a per-node game-kind branch.
+in exhaustive and sampled traversal, and the documented two-player fast path
+is selected without a per-node game-kind branch. Reporting arrays are allocated
+only at explicit result boundaries; steady-state traversal remains allocation-
+free.
 
 #### Stage 6: cut over to the minimal production API
 
@@ -1577,17 +1780,23 @@ performed.
 1. Freeze a small conceptual public surface:
 
    ```fsharp
-   create          : SolverMode -> Game<'state> -> InfoSetMeta[] -> seed:int -> Solver<'state>
+   create          : SolverMode -> playerCount:int -> Game<'state> -> InfoSetMeta[] -> seed:int -> Solver<'state>
    runIteration    : Solver<'state> -> root:'state -> unit
    run             : iterations:int -> Solver<'state> -> root:'state -> unit
+   runUntil        : maxIterations:int -> check:ConvergenceCheck -> Solver<'state> -> root:'state -> TrainingResult
+   evaluateAverage : Solver<'state> -> root:'state -> utilities:double[] -> unit
    averageStrategy : Solver<'state> -> infoSetId:int -> double[]
    ```
 
    The concrete F# signatures may group construction data into one record, but
    they should not add inheritance, plugins, optional average tracking, a
-   numeric-type parameter, or graph-specific configuration. Reporting may
-   allocate a result array because it is outside training; add a destination-
-   buffer overload only if reporting is itself measured as a bottleneck.
+   numeric-type parameter, or graph-specific configuration. The preliminary
+   `Solver.Train` and `Solver.TrainUntil` methods already implement iteration
+   ownership, cumulative utility reporting, and caller-defined tolerance
+   checks; Stage 6 will retain that behavior while completing the opaque API
+   cutover. Stage 5 already uses destination buffers for multiplayer iteration
+   and profile evaluation while retaining allocation-free two-player tuple
+   conveniences.
 2. Keep `Solver<'state>` opaque. Expose mode, iteration count, metadata, and
    normalized average strategy through functions rather than writable table
    fields.
@@ -1896,3 +2105,145 @@ algorithm.
   for apply-then-clear, a $1.30\%$ reduction with zero allocation.
 - Appended the rerun rather than replacing the earlier conservative result,
   preserving the observed timing variability on the throttled, busy machine.
+
+### 2026-07-13 - Stage 4: two-player MCCFR and MCCFR+
+
+- Added a public two-player `Solver<'State,'Game>` with exactly four explicit
+  modes: `CFR`, `CFRPlus`, `MCCFR`, and `MCCFRPlus`. Construction accepts dense
+  legal-slot metadata, depth and action bounds, sampled-delta capacity, and
+  either a deterministic seed or caller-owned `Random`. The former
+  `IExhaustiveGame<'State>` contract is now the shared public `IGame<'State>`;
+  the legacy `cfr` and `cfrSampled` functions remain unchanged until Stage 6.
+- Implemented a separate short external-sampling target traversal. Target nodes
+  expand every action; opponent nodes reuse one epoch-cached pure action per
+  information set; chance samples its validated fixed distribution; and sampled
+  regret uses $\widetilde v_i(I,a)-\widetilde v_i(I)$ without a second external-
+  reach multiplier. The paired pass returns each target player's own utility,
+  including in general-sum games.
+- Preserved mode boundaries: MCCFR defers both players' signed deltas until the
+  simultaneous iteration boundary, while MCCFR+ applies after each alternating
+  target pass. Clipped sparse logs are sorted and duplicate slots aggregated
+  before one clip; signed logs drain directly. Non-target visits perform the
+  mandatory uniform or linear average-strategy update exactly once per row and
+  pass. Mode selection occurs in the public iteration method, not in either
+  recursive traversal.
+- Added statistical comparison of sampled deltas with the exhaustive oracle
+  using 20,000 fixed-profile samples and a six-observed-standard-error bound.
+  Added regressions for repeated opponent information sets, aggregate clipping,
+  fixed-seed table reproducibility, independent general-sum utilities, chance
+  sampling, invalid chance and random probabilities, log overflow, signed and
+  clipped regrets, averaging weights, normalized reporting, reduced node
+  visits, and all four public modes. The Release solution built with zero
+  warnings; all 57 tests passed; 10,000 warmed iterations of both MCCFR modes
+  allocated zero bytes.
+- Added a distinct Stage 4 benchmark with seven rotating interleaved runs. On
+  the four-action, depth-five fixture, CFR, CFR+, MCCFR, and MCCFR+ respectively
+  measured 79.797, 99.229, 14.882, and 13.919 ms for 500 iterations, with zero
+  allocation in every mode. The sampled passes visited 33,500 nonterminal nodes
+  versus 170,500 for CFR and 341,000 for CFR+. Exact traversal-workspace payload
+  was 5,660 sampled bytes versus 15,324 exhaustive bytes at the fixture's
+  104-slot sampled-log capacity.
+- Deviation: the production API remains intentionally small but is not yet the
+  final opaque Stage 6 surface; Stage 4 exposes construction bounds and sampled
+  log capacity so overflow is explicit and no hot-path resizing is introduced.
+  Timing is recorded as a constrained same-session comparison because the
+  machine remained approximately 65% throttled and typically above 50% CPU
+  load.
+
+### 2026-07-13 - Ergonomic training and convergence surface
+
+- Added fixed-budget `Train` and tolerance-driven `TrainUntil` methods to the
+  public two-player solver. Both own sequential iteration numbering, continue
+  across calls, and return cumulative mean utilities and explicit stop state.
+- Added configurable check intervals and consecutive successful checks. The
+  final partial interval is checked, and non-finite or negative error measures
+  are rejected. Convergence remains caller-defined so the core does not mistake
+  utility or policy stability for an equilibrium guarantee; a known-value
+  utility-error helper is provided for small-game regression checks.
+- Added `EvaluateAverageProfile`, a generic exact reporting traversal over the
+  normalized packed average strategy. It returns both general-sum utilities
+  and validates chance and information-set metadata without requiring callers
+  to materialize every strategy row.
+- Updated Mini Dudo to use the production training and profile-evaluation
+  surfaces for its one-million-iteration MCCFR+ and exhaustive-CFR known-value
+  checks. The script no longer duplicates iteration, average-profile traversal,
+  or normalized-strategy validation loops; its Dudo-specific exhaustive rule
+  checks were reduced to targeted claim-order and wild-rank assertions in the
+  same `.fsx` file. Zero-sum utility is guaranteed directly by selecting one
+  winner and returning opposite payoffs, so exhaustive outcome enumeration was
+  redundant.
+- Migrated Hidden Matching Pennies and Kuhn Poker from hand-written iteration
+  loops to `Solver.Train`. Kuhn now uses `EvaluateAverageProfile` instead of a
+  second recursive evaluator, and its redundant all-information-set
+  normalization loop was removed because normalization is a solver guarantee.
+- Replaced the output-`byref` terminal callback with an allocation-free
+  `double voption` result. Game object expressions now return `ValueSome payoff`
+  or `ValueNone` directly, while terminal detection and payoff retrieval remain
+  one virtual call.
+- Added focused continuation, early-stop, final-check, validation, and helper
+  tests. The Release test run passed all 65 tests, including exact matrix and
+  chance-profile evaluation and the existing
+  10,000-iteration zero-allocation checks for exhaustive and sampled modes. A
+  reduced one-iteration MCCFR+/20-iteration CFR Mini Dudo run also passed its
+  self-contained rules and generic exact-profile evaluation. A separate
+  500-iteration exhaustive run passed
+  the known-value tolerance with mean utility $-0.026678$ and error $0.000454$.
+  After the `ValueOption` cutover, all three example scripts ran successfully
+  and all 65 tests passed again. The interleaved four-mode benchmark retained
+  zero allocation and exact node counts; its timing differences were mixed
+  under the throttled, busy machine, so no throughput improvement or regression
+  is claimed. The complete run is appended to
+  [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
+
+### 2026-07-13 - Stage 5: $N$-player general-sum and chance completion
+
+- Generalized all four solver modes to `playerCount >= 2`. Exhaustive and
+  sampled multiplayer schedules make one target-utility traversal per player,
+  request only that player's terminal payoff, and never allocate an
+  $N$-utility vector in a recursive regret traversal. Generic exhaustive
+  traversal still carries only own reach and combined external reach.
+- Preserved the optimized two-player boundary: vanilla CFR returns both
+  utilities in one pass, while CFR+ and both MCCFR modes make two direct target
+  calls. The public tuple `RunIteration` remains allocation-free for that
+  primary case. Multiplayer `RunIterationInto` and
+  `EvaluateAverageProfileInto` use caller-owned output; training and tolerance
+  checks report one cumulative mean per player in `MeanUtilities`.
+- Added the planned exact average-strategy sweep for multiplayer external
+  sampling. It runs once against the start-of-iteration profile, uses one
+  reusable `double[N]` reach vector with multiply/restore backtracking, and
+  applies the information-set epoch guard. The subsequent sampled regret
+  passes perform no averaging. Two-player sampled solvers allocate no reach
+  vector and retain their paired estimator.
+- Added hand-computed three-player general-sum utilities and regrets across all
+  four modes, arbitrary actor order, consecutive turns, skipped players,
+  player-owned dense rows, exact own-reach averaging, exact exhaustive chance,
+  statistically bounded sampled chance, multiplayer profile evaluation,
+  construction and buffer validation, and 10,000-iteration allocation checks.
+  All 72 Release tests pass; each warmed three-player mode allocates zero bytes.
+- Built the test and benchmark projects in Release with zero warnings. The
+  library continues to compile for both `net5.0` and `netstandard2.1`.
+  Seven-run interleaved benchmarks preserve exact two-player visit schedules
+  and zero allocation. The paired public/direct boundary ratios range from
+  0.868 to 1.071 under the approximately 65%-throttled, usually greater-than-
+  50%-loaded machine, showing no consistent material regression but not
+  supporting a speedup claim. Three-player CFR, CFR+, MCCFR, and MCCFR+ also
+  allocate zero bytes; full timings, node counts, environment, and memory
+  payloads are appended to
+  [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
+- Deviation from the original wording: the established `TerminalUtility`
+  contract returns one requested player's scalar payoff rather than a struct
+  payoff from which the solver selects a component. This is strictly smaller
+  for general-sum multiplayer games and avoids constructing a payoff vector at
+  terminal nodes. Reporting arrays occur only at explicit API boundaries.
+
+### 2026-07-13 - Stage 5 documentation addendum
+
+- Updated the repository README to describe implemented finite sequential
+  $N$-player general-sum and chance support while retaining the optimized
+  two-player path.
+- Updated the large-game proposal to treat multiplayer core support as an
+  implemented foundation rather than future intent. Its neural and abstraction
+  extensions remain future work.
+- Retained the two-player assumptions at the beginning of this document because
+  that section intentionally explains the legacy `cfr.fs` functions; the later
+  redesign sections document `CFRCore.fs` and its completed Stage 5 behavior.
