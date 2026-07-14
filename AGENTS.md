@@ -46,6 +46,19 @@ Do not overwrite earlier results. Append a new dated run section, or a clearly
 labelled additional run under the same date, so performance history and changed
 methodology remain auditable.
 
+## Commit protocol
+
+Before creating a commit:
+
+1. Export the complete staged diff to `changes.txt` (for example,
+   `git diff --cached --output=changes.txt`). Do not include unstaged changes.
+2. Read and summarize `changes.txt`, identifying the meaningful behavior,
+   design decisions, and motivation represented by the staged changes.
+3. Generate the commit message from that summary. The message must cover the
+   actions in `changes.txt` and explain why they matter to a reader unfamiliar
+   with the project, without becoming either shallow or overlong.
+4. Commit only the staged changes, using the generated message.
+
 ## Write Commit Messages for Future Readers
 
 - A commit message must let a reader understand the meaningful change and the relevant design choice

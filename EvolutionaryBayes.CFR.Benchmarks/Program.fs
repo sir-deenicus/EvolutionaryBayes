@@ -1,4 +1,4 @@
-module EvolutionaryBayes.CFR.Benchmarks
+module EvolutionaryBayes.CFRBenchmarks
 
 open System
 open System.Collections.Generic
@@ -56,6 +56,11 @@ type FastPathMeasurement =
       PublicOverDirect: double
       DirectMedianAllocated: int64
       PublicMedianAllocated: int64 }
+
+type CutoverMeasurement =
+    { Variant: string
+      MedianMilliseconds: double
+      MedianAllocated: int64 }
 
 [<Struct>]
 type BenchmarkState =
@@ -505,18 +510,17 @@ let runStage4Comparison actions depth iterations repetitions =
     let run mode measured =
         let game = Stage4BenchmarkGame(actions, depth)
         let solver =
-            Solver<BenchmarkState, Stage4BenchmarkGame>(
-                mode,
-                game,
-                definitions,
-                depth,
-                actions,
-                deltaCapacity,
+            Solver.create
+                mode
+                2
+                game
+                definitions
+                depth
+                actions
                 1729
-            )
 
-        for iteration in 1..100 do
-            solver.RunIteration(iteration, 0, root) |> ignore
+        for _ in 1..100 do
+            Solver.runIteration solver 0 root
 
         game.ResetActorCalls()
         GC.Collect()
@@ -525,8 +529,8 @@ let runStage4Comparison actions depth iterations repetitions =
         let before = GC.GetAllocatedBytesForCurrentThread()
         let started = Stopwatch.GetTimestamp()
 
-        for iteration in 101..iterations + 100 do
-            solver.RunIteration(iteration, 0, root) |> ignore
+        for _ in 1..iterations do
+            Solver.runIteration solver 0 root
 
         let stopped = Stopwatch.GetTimestamp()
         let allocated = GC.GetAllocatedBytesForCurrentThread() - before
@@ -574,20 +578,17 @@ let runStage5Comparison actions depth iterations repetitions =
     let run mode measured =
         let game = Stage5BenchmarkGame(actions, depth)
         let solver =
-            Solver<BenchmarkState, Stage5BenchmarkGame>(
-                mode,
-                game,
-                3,
-                definitions,
-                depth,
-                actions,
-                deltaCapacity,
+            Solver.create
+                mode
+                3
+                game
+                definitions
+                depth
+                actions
                 1729
-            )
-        let utilities = Array.zeroCreate 3
 
-        for iteration in 1..100 do
-            solver.RunIterationInto(iteration, 0, root, utilities)
+        for _ in 1..100 do
+            Solver.runIteration solver 0 root
 
         game.ResetActorCalls()
         GC.Collect()
@@ -596,8 +597,8 @@ let runStage5Comparison actions depth iterations repetitions =
         let before = GC.GetAllocatedBytesForCurrentThread()
         let started = Stopwatch.GetTimestamp()
 
-        for iteration in 101..iterations + 100 do
-            solver.RunIterationInto(iteration, 0, root, utilities)
+        for _ in 1..iterations do
+            Solver.runIteration solver 0 root
 
         let stopped = Stopwatch.GetTimestamp()
         let allocated = GC.GetAllocatedBytesForCurrentThread() - before
@@ -687,18 +688,17 @@ let runTwoPlayerFastPathBoundary actions depth iterations repetitions =
     let runPublic mode measured =
         let game = Stage4BenchmarkGame(actions, depth)
         let solver =
-            Solver<BenchmarkState, Stage4BenchmarkGame>(
-                mode,
-                game,
-                definitions,
-                depth,
-                actions,
-                deltaCapacity,
+            Solver.create
+                mode
+                2
+                game
+                definitions
+                depth
+                actions
                 1729
-            )
 
-        for iteration in 1..100 do
-            solver.RunIteration(iteration, 0, root) |> ignore
+        for _ in 1..100 do
+            Solver.runIteration solver 0 root
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
@@ -706,8 +706,8 @@ let runTwoPlayerFastPathBoundary actions depth iterations repetitions =
         let before = GC.GetAllocatedBytesForCurrentThread()
         let started = Stopwatch.GetTimestamp()
 
-        for iteration in 101..iterations + 100 do
-            solver.RunIteration(iteration, 0, root) |> ignore
+        for _ in 1..iterations do
+            Solver.runIteration solver 0 root
 
         let stopped = Stopwatch.GetTimestamp()
         let allocated = GC.GetAllocatedBytesForCurrentThread() - before
@@ -746,6 +746,140 @@ let runTwoPlayerFastPathBoundary actions depth iterations repetitions =
           PublicOverDirect = publicPath / direct
           DirectMedianAllocated = median directAllocations.[index]
           PublicMedianAllocated = median publicAllocations.[index] })
+
+let runStage6LegacyComparison actions depth iterations repetitions =
+    let legacyTimes = Array.zeroCreate repetitions
+    let legacyAllocations = Array.zeroCreate repetitions
+    let productionTimes = Array.zeroCreate repetitions
+    let productionAllocations = Array.zeroCreate repetitions
+    let definitions = stage3Definitions actions depth
+    let deltaCapacity = stage4DeltaCapacity actions depth
+    let root = { Node = 0; Depth = 0; LastAction = 0 }
+
+    let runLegacy () =
+        let nodes = Dictionary<string, StrategyNode>()
+        let actionNames = Array.init actions (fun index -> string (char (65 + index)))
+        let contexts = [| "P0"; "P1" |]
+        let reward (_: string[]) player (history: string) =
+            if history.Length = depth then
+                Some(if (int history.[history.Length - 1]) % 2 = player then 1.0 else -1.0)
+            else
+                None
+        let adjust (_: string[]) _ action history = history + action
+        let mask _ (_: string[]) _ = Array.create actions true
+
+        for iteration in 1..100 do
+            cfr iteration 0 0 1.0 1.0 reward lookup adjust mask id nodes contexts actionNames ""
+            |> ignore
+
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+
+        for iteration in 101..iterations + 100 do
+            cfr iteration 0 0 1.0 1.0 reward lookup adjust mask id nodes contexts actionNames ""
+            |> ignore
+
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        float (stopped - started) * 1000.0 / float Stopwatch.Frequency, allocated
+
+    let runProduction () =
+        let game = Stage4BenchmarkGame(actions, depth)
+        let solver =
+            Solver.create
+                SolverMode.CFRPlus
+                2
+                game
+                definitions
+                depth
+                actions
+                1729
+
+        for _ in 1..100 do
+            Solver.runIteration solver 0 root
+
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+        let before = GC.GetAllocatedBytesForCurrentThread()
+        let started = Stopwatch.GetTimestamp()
+
+        for _ in 1..iterations do
+            Solver.runIteration solver 0 root
+
+        let stopped = Stopwatch.GetTimestamp()
+        let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+        float (stopped - started) * 1000.0 / float Stopwatch.Frequency, allocated
+
+    for repetition in 0..repetitions - 1 do
+        let recordLegacy () =
+            let milliseconds, allocated = runLegacy ()
+            legacyTimes.[repetition] <- milliseconds
+            legacyAllocations.[repetition] <- allocated
+
+        let recordProduction () =
+            let milliseconds, allocated = runProduction ()
+            productionTimes.[repetition] <- milliseconds
+            productionAllocations.[repetition] <- allocated
+
+        if repetition &&& 1 = 0 then
+            recordLegacy ()
+            recordProduction ()
+        else
+            recordProduction ()
+            recordLegacy ()
+
+    [| { Variant = "Legacy dictionary CFR+"
+         MedianMilliseconds = median legacyTimes
+         MedianAllocated = median legacyAllocations }
+       { Variant = "Production packed CFR+"
+         MedianMilliseconds = median productionTimes
+         MedianAllocated = median productionAllocations } |]
+
+let stage6Payload actions depth =
+    let definitions = stage3Definitions actions depth
+    let table = PackedTable.create 2 definitions
+    let exhaustiveSolver =
+        ExhaustiveSolver(SolverMode.CFR, Stage4BenchmarkGame(actions, depth), table, depth, actions)
+    let sampledSolver =
+        SampledSolver(
+            SolverMode.MCCFR,
+            Stage4BenchmarkGame(actions, depth),
+            PackedTable.create 2 definitions,
+            depth,
+            actions,
+            depth * actions,
+            Random 1729
+        )
+    let root = { Node = 0; Depth = 0; LastAction = 0 }
+
+    for iteration in 1..100 do
+        sampledSolver.RunIteration(iteration, 0, root) |> ignore
+
+    let exhaustive = exhaustiveSolver.Workspace
+    let sampled = sampledSolver.Workspace
+
+    let commonBytes common =
+        8L * int64 (common.Strategies.Length + common.Utilities.Length)
+        + 4L * int64 common.AverageEpochs.Length
+
+    let persistent =
+        8L * int64 (table.Tables.Regrets.Length + table.Tables.StrategySums.Length)
+    let metadata = int64 table.InfoSets.Length * int64 (Marshal.SizeOf<InfoSetMeta>())
+    let exhaustiveBytes =
+        commonBytes exhaustive.Common
+        + 8L * int64 exhaustive.RegretDeltas.Length
+        + 4L * int64 (exhaustive.TouchedRows.Length + exhaustive.TouchedEpochs.Length)
+    let sampledBytes =
+        commonBytes sampled.Common
+        + 4L * int64 (sampled.SampledActions.Length + sampled.SampleEpochs.Length)
+        + 4L * int64 sampled.DeltaIndices.Length
+        + 8L * int64 sampled.DeltaValues.Length
+
+    persistent, metadata, exhaustiveBytes, sampledBytes
 
 [<EntryPoint>]
 let main arguments =
@@ -856,7 +990,7 @@ let main arguments =
     printfn "| Exhaustive | %d |" stage4ExhaustiveBytes
     printfn "| Sampled | %d |" stage4SampledBytes
     printfn ""
-    printfn "Stage 5 two-player boundary check: seven interleaved medians compare each internal direct specialized solver with the public Stage 5 path on the same workload. A ratio near 1.0 means multiplayer dispatch and utility accounting add no material boundary cost."
+    printfn "Stage 6 opaque-boundary check: seven interleaved medians compare each internal direct specialized solver with the final public path on the same workload. A ratio near 1.0 means the opaque wrapper adds no material boundary cost."
     printfn ""
     printfn "| Mode | Direct median ms | Public median ms | Public/direct | Direct allocated bytes | Public allocated bytes |"
     printfn "| --- | ---: | ---: | ---: | ---: | ---: |"
@@ -873,4 +1007,27 @@ let main arguments =
         printfn "| %A | %d | %.3f | %.0f | %d |" result.Mode result.NodeVisits result.MedianMilliseconds result.MedianNodesPerSecond result.MedianAllocated
     printfn ""
     printfn "The three-player solver owns two reusable 3-double utility buffers (48 bytes). Sampled modes additionally own one reusable 3-double exact-average reach vector (24 bytes); two-player solvers do not allocate that vector."
+    printfn ""
+    printfn "## Stage 6 production cutover"
+    printfn ""
+    printfn "Legacy-versus-production results are seven alternating interleaved medians for 4 actions, depth 5, 500 measured iterations after 100 warm-up iterations. The legacy traversal performs one allocating dictionary/string CFR+ pass; production CFR+ performs two target-player passes, so elapsed time is conservative for the production implementation."
+    printfn ""
+    printfn "| Variant | Median elapsed ms | Median allocated bytes |"
+    printfn "| --- | ---: | ---: |"
+    for result in runStage6LegacyComparison stage4Actions stage4Depth 500 7 do
+        printfn "| %s | %.3f | %d |" result.Variant result.MedianMilliseconds result.MedianAllocated
+
+    let stage6Persistent, stage6Metadata, stage6Exhaustive, stage6Sampled =
+        stage6Payload stage4Actions stage4Depth
+    printfn ""
+    printfn "Exact payloads below are calculated from the actual allocated array lengths for the 341-information-set, 1,364-slot fixture. A solver owns the persistent tables and metadata plus exactly the workspace selected by its mode."
+    printfn ""
+    printfn "| Component | Payload bytes |"
+    printfn "| --- | ---: |"
+    printfn "| Persistent regrets + strategy sums | %d |" stage6Persistent
+    printfn "| Information-set metadata | %d |" stage6Metadata
+    printfn "| Exhaustive workspace | %d |" stage6Exhaustive
+    printfn "| Sampled workspace | %d |" stage6Sampled
+    printfn "| Exhaustive solver total | %d |" (stage6Persistent + stage6Metadata + stage6Exhaustive)
+    printfn "| Sampled solver total | %d |" (stage6Persistent + stage6Metadata + stage6Sampled)
     0

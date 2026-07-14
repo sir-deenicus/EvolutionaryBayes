@@ -1,14 +1,19 @@
-# How `cfr.fs` Works
+# Counterfactual Regret Minimization in `CFRCore.fs`
 
-[`cfr.fs`](EvolutionaryBayes/cfr.fs) implements Counterfactual Regret Minimization (CFR) for
-finite, two-player, zero-sum games with imperfect information. It provides two
-tree traversals:
+[`CFRCore.fs`](EvolutionaryBayes/CFRCore.fs) is the production implementation.
+It provides packed, allocation-free-after-construction CFR, CFR+, external-
+sampling MCCFR, and MCCFR+ for finite sequential games with at least two
+players, general-sum utilities, consecutive or skipped turns, and explicit
+chance nodes. Dense local action indices mean illegal moves never enter the
+traversal and no action mask is scanned.
 
-- `cfr`, which expands every legal player action;
-- `cfrSampled`, which implements external-sampling Monte Carlo CFR (MCCFR).
-
-Both use CFR+ regret clipping, legal-action masks, and linearly weighted
-strategy averaging.
+The former dictionary/string implementation now lives only in
+[`LegacyCFR.fs`](EvolutionaryBayes.CFR.Tests/LegacyCFR.fs) as a test and
+benchmark reference. Sections 1 through 15 retain its mathematical audit and
+known issues for migration context; Section 16 describes the production core,
+its final API, memory model, completed implementation stages, and remaining
+performance-gated work. The legacy functions and `StrategyNode` are absent
+from the production assembly.
 
 ## 1. Assumed game model
 
@@ -479,6 +484,13 @@ reused.
 
 ## 15. Limitations, issues, and invariants
 
+This section audits the test-only legacy reference. The production core fixes
+the implementation defects below with player-owned dense IDs, deferred
+per-iteration regret application, traversal-local sample reuse, independent
+target utilities, validated player counts, explicit chance nodes, and a game-
+supplied actor. The mathematical perfect-recall and stable-action requirements
+remain obligations of every game adapter.
+
 ### Known correctness issues
 
 #### Information-set keys are not player-scoped
@@ -613,10 +625,10 @@ For correct use:
 - normalize `strategySum`, rather than `regretSum`, to report the learned
   average policy.
 
-## 16. Future work and improvements
+## 16. Production core, staged plan, and future work
 
 The redesign is a small, allocation-free CFR/MCCFR core rather than a large
-framework. Stages 1 through 5 are implemented: the legacy traversals have a
+framework. Stages 1 through 6 are implemented: the legacy traversals have a
 reproducible safety net, the packed scalar core supports exhaustive and sampled
 workspaces, and the general-sum `Solver` exposes CFR, CFR+, MCCFR, and MCCFR+
 for any finite player count of at least two. It also owns fixed-budget and
@@ -629,10 +641,11 @@ average-strategy sweep described below. No special storage, solver, or
 scheduling support is planned for graphical, polymatrix, or hypergraphical
 games.
 
-The legacy public `cfr` and `cfrSampled` functions remain until the Stage 6
-cutover and still always apply CFR+ regret clipping and linear averaging. New
-code can instead select one of the four explicit `SolverMode` cases without a
-Boolean `plus` or `sampled` switch.
+The Stage 6 cutover removed the legacy public `cfr`, `cfrSampled`,
+`StrategyNode`, string keys, global action masks, and negamax callbacks from
+the production assembly. They remain only in the friend test and benchmark
+assemblies as a restricted reference. Production callers select one of the
+four explicit `SolverMode` cases without Boolean `plus` or `sampled` switches.
 
 Large-game work remains outside the production-core stages. A game adapter may
 first apply an optional exact, lossless canonicalization under its own game
@@ -700,15 +713,105 @@ stage requires an unfinished public mode to remain exposed.
 | 3a | Immediate exhaustive hot-path optimization - completed 2026-07-12 | Vanilla two-player CFR returns both utilities from one traversal and exhaustive regret application clears deltas in the same slot pass. A proposed unchecked touch helper was benchmarked and rejected. |
 | 4 | Sampled two-player solver - completed 2026-07-13 | `MCCFR` and `MCCFRPlus` share the packed tables and scalar kernels with exhaustive modes; all four modes are exposed through one public `Solver`. |
 | 5 | $N$-player and chance completion - completed 2026-07-13 | Every mode supports finite sequential $N$-player general-sum games and explicit chance nodes while retaining the selected two-player path. |
-| 6 | Production cutover | The legacy recursive implementation is removed from production, the minimal API is frozen, and memory, allocation, convergence, and migration checks pass. |
+| 6 | Production cutover - completed 2026-07-14 | The legacy recursive implementation is removed from production, the minimal opaque API is frozen, and memory, allocation, convergence, and migration checks pass. |
 | 7 | Profile-guided single-thread optimization | Small-action scalar fast paths and, only where profitable, isolated SIMD kernels improve measured throughput without changing the design. |
 | 8 | Optional deterministic parallel batches | Parallel MCCFR is added only if representative workloads justify its complexity and it passes reproducibility and memory gates. |
 
-Stage 5 passed before Stage 6 began. Stages 1 through 6 define the required
-production core. Stage 7 may legitimately
+Stages 1 through 6 are complete and define the required production core.
+Stage 7 may legitimately
 end with scalar code if SIMD does not win. Stage 8 may legitimately end with a
 documented no-go result; parallel execution is not required to consider the
 core complete.
+
+### Final production API
+
+`Solver<'State>` is opaque: callers cannot construct it directly, reach its
+packed tables, mutate regrets, or disable average-strategy tracking. The
+public `Solver` module owns iteration numbering and exposes this surface:
+
+```fsharp
+Solver.create
+    : SolverMode
+   -> playerCount:int
+   -> game:'Game
+   -> informationSets:InfoSetDefinition[]
+   -> maxDepth:int
+   -> maxActionCount:int
+   -> seed:int
+   -> Solver<'State>
+   when 'Game :> IGame<'State>
+
+Solver.mode                : Solver<'State> -> SolverMode
+Solver.playerCount         : Solver<'State> -> int
+Solver.informationSets     : Solver<'State> -> InfoSetDefinition[]
+Solver.iterationsCompleted : Solver<'State> -> int
+Solver.runIteration        : Solver<'State> -> burnIn:int -> root:'State -> unit
+Solver.run                 : Solver<'State> -> iterations:int -> burnIn:int -> root:'State -> TrainingResult
+Solver.runUntil            : Solver<'State> -> maxIterations:int -> burnIn:int -> root:'State -> ConvergenceCheck -> (TrainingProgress -> double) -> TrainingResult
+Solver.evaluateAverage     : Solver<'State> -> root:'State -> utilities:double[] -> unit
+Solver.averageStrategy     : Solver<'State> -> infoSetId:int -> double[]
+```
+
+`maxDepth` and `maxActionCount` are explicit safety and scratch-space bounds.
+The sampled-delta log is not caller-sized: it begins with their product, grows
+geometrically during warm-up if necessary, and then reuses its high-water
+arrays. Exhaustive modes never construct a sampled workspace. A normalized
+average strategy is always tracked and is the policy returned for play.
+
+The opaque wrapper retains the caller's static game type in an internal generic
+engine. Public calls cross one stored operation boundary per iteration or
+report and add no dispatch inside the recursive hot path. A concrete adapter
+remains eligible for runtime specialization; an F# object expression naturally
+uses the ordinary `IGame<'State>` interface calls.
+
+```fsharp
+let solver =
+    Solver.create
+        SolverMode.CFRPlus
+        2
+        game
+        informationSets
+        maxDepth
+        maxActionCount
+        1729
+
+let result = Solver.run solver 100_000 burnIn root
+let player0Policy = Solver.averageStrategy solver player0InfoSetId
+
+let utilities = Array.zeroCreate (Solver.playerCount solver)
+Solver.evaluateAverage solver root utilities
+```
+
+#### Migration from the legacy callbacks
+
+The breaking cutover is intentionally direct:
+
+- replace the history string plus `contexts` with one game-defined state type;
+- replace `reward` with `IGame.TerminalUtility`, returning `ValueSome` for a
+  terminal state and a utility for the requested target player;
+- replace `depth % 2` with `IGame.Actor`, using `ChanceActor` for chance;
+- replace string-keyed `lookup` with dense, player-owned
+  `InformationSetId` values and an `InfoSetDefinition[]` declared once;
+- replace the global action array and Boolean mask with local legal actions
+  `0 .. ActionCount(state) - 1` and `NextState(state, localAction)`;
+- replace caller-owned iteration loops with `Solver.run`, `Solver.runUntil`, or
+  allocation-free `Solver.runIteration`.
+
+The runnable
+[`hidden-matching-pennies.fsx`](EvolutionaryBayes.CFR.Tests/games/hidden-matching-pennies.fsx)
+is the smallest complete object-expression adapter. Kuhn poker and Mini Dudo
+exercise explicit chance, convergence checks, and average-profile evaluation.
+
+Build and test with:
+
+```powershell
+dotnet build EvolutionaryBayes.sln -c Release -v:minimal
+dotnet run --project EvolutionaryBayes.CFR.Tests -c Release
+dotnet run --project EvolutionaryBayes.CFR.Benchmarks -c Release -- --revision <revision>
+```
+
+Complete benchmark history, including machine-load qualifications, is kept in
+[`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
 ### Target game model
 
@@ -830,20 +933,19 @@ against which both sampled implementations can be tested.
 
 ### Training and convergence checks
 
-`Solver` owns the ordinary training loop. `Train(iterations, burnIn, root)`
-runs a fixed additional budget, continues from prior calls, and returns a
+`Solver` owns the ordinary training loop. `Solver.run solver iterations burnIn
+root` runs a fixed additional budget, continues from prior calls, and returns a
 `TrainingResult` containing the iterations run, total iterations completed,
 and a `MeanUtilities` array with one cumulative mean per player. The
 `MeanUtility0` and `MeanUtility1` members remain convenient aliases for the
-primary two-player case. The allocation-free tuple-returning `RunIteration`
-remains available for two-player specialized loops; multiplayer callers use
-`RunIterationInto` with a caller-owned $N$-element buffer. Iteration numbers
-must be sequential. This prevents a skipped or repeated index from silently
-changing CFR+ linear weights or burn-in behavior.
+primary two-player case. `Solver.runIteration solver burnIn root` advances one
+additional iteration without allocating a result. The opaque solver owns the
+one-based sequence, so callers cannot skip or repeat an index and silently
+change CFR+ linear weights or burn-in behavior.
 
-`TrainUntil(maxIterations, burnIn, root, check, measureError)` adds periodic
-convergence checks. The caller supplies a non-negative error measure $e_t$;
-training stops when
+`Solver.runUntil solver maxIterations burnIn root check measureError` adds
+periodic convergence checks. The caller supplies a non-negative error measure
+$e_t$; training stops when
 
 $$
 e_t \le \varepsilon,
@@ -879,23 +981,22 @@ let check =
     |> ConvergenceCheck.withConsecutiveChecks 3
 
 let result =
-    solver.TrainUntil(
-        100_000,
-        burnIn,
-        root,
-        check,
-        fun _ -> exploitability solver)
+    Solver.runUntil
+        solver
+        100_000
+        burnIn
+        root
+        check
+        (fun _ -> exploitability solver)
 ```
 
-`EvaluateAverageProfile(root)` performs an exact full-tree evaluation of the
-normalized average profile and returns the two-player result as a struct tuple.
-`EvaluateAverageProfileInto(root, utilities)` provides the same operation for
-any player count using caller-owned output. Both normalize directly from the
-packed strategy sums into one flat temporary profile and request one target
-utility at a time, so no payoff vector is constructed at terminal nodes. These
-are explicit reporting operations: their time is proportional to the complete
-game tree and to the number of requested players, so large games should use a
-game-appropriate sampled evaluator instead.
+`Solver.evaluateAverage solver root utilities` performs an exact full-tree
+evaluation of the normalized average profile for every player using caller-
+owned output. It normalizes directly from the packed strategy sums into one
+flat temporary profile and requests one target utility at a time, so no payoff
+vector is constructed at terminal nodes. This is an explicit reporting
+operation: its time is proportional to the complete game tree and player
+count, so large games should use a game-appropriate sampled evaluator instead.
 
 For a target-player exhaustive traversal, only two reach products are needed
 even in an $N$-player game:
@@ -1019,9 +1120,11 @@ extra reach vector and retain the Stage 4 paired estimator.
 
 All caches use integer epochs. Advancing past `Int32.MaxValue` explicitly
 clears the associated epoch array and restarts at epoch one, preventing a stale
-entry from becoming valid after wraparound. Sampled delta capacity is fixed at
-construction; exceeding it fails explicitly instead of resizing inside a
-traversal.
+entry from becoming valid after wraparound. The sparse sampled-delta log starts
+at `maxDepth * maxActionCount` entries and doubles only when a traversal first
+needs more space. This removes game-specific capacity sizing from the public
+API. Once representative warm-up iterations establish the high-water mark,
+later traversals reuse the arrays and allocate zero bytes.
 
 An exhaustive solver does not allocate the sampled cache, and a sampled solver
 does not allocate the dense exhaustive delta array. Mode selection occurs at
@@ -1105,8 +1208,9 @@ information sets.
 
 The epoch-based sampling cache uses two integer arrays, approximately eight
 bytes per information set. It exists only for external sampling; exhaustive
-workspaces do not need it. The sampled delta log uses one integer index and one
-double value per touched slot, approximately $12T$ bytes at capacity $T$. If
+workspaces do not need it. The growable sampled delta log uses one integer index
+and one double value per touched slot, approximately $12T$ bytes at its current
+high-water capacity $T$. If
 action count is known to fit in a smaller integer, the cached action component
 may be narrowed, but a generic numeric-storage framework is not warranted
 solely for this saving.
@@ -1768,76 +1872,71 @@ is selected without a per-node game-kind branch. Reporting arrays are allocated
 only at explicit result boundaries; steady-state traversal remains allocation-
 free.
 
-#### Stage 6: cut over to the minimal production API
+#### Stage 6: cut over to the minimal production API - completed 2026-07-14
 
-**Milestone outcome.** There is one production implementation, one unambiguous
-average-policy contract, and no dictionary/string/array-allocation legacy path
-inside `cfr.fs`. The redesign is now complete even if Stages 7 and 8 are never
-performed.
+**Implemented result.** There is one production implementation, one mandatory
+average-policy contract, and no dictionary, string-key, action-mask, or
+negamax legacy path in the production assembly. `Solver<'State>` is opaque and
+the `Solver` module owns construction, sequential iterations, convergence
+checks, evaluation, and normalized average-strategy reporting. The redesign is
+complete even if Stages 7 and 8 are never performed.
 
-**Implementation work.**
+**Implemented work.**
 
-1. Freeze a small conceptual public surface:
-
-   ```fsharp
-   create          : SolverMode -> playerCount:int -> Game<'state> -> InfoSetMeta[] -> seed:int -> Solver<'state>
-   runIteration    : Solver<'state> -> root:'state -> unit
-   run             : iterations:int -> Solver<'state> -> root:'state -> unit
-   runUntil        : maxIterations:int -> check:ConvergenceCheck -> Solver<'state> -> root:'state -> TrainingResult
-   evaluateAverage : Solver<'state> -> root:'state -> utilities:double[] -> unit
-   averageStrategy : Solver<'state> -> infoSetId:int -> double[]
-   ```
-
-   The concrete F# signatures may group construction data into one record, but
-   they should not add inheritance, plugins, optional average tracking, a
-   numeric-type parameter, or graph-specific configuration. The preliminary
-   `Solver.Train` and `Solver.TrainUntil` methods already implement iteration
-   ownership, cumulative utility reporting, and caller-defined tolerance
-   checks; Stage 6 will retain that behavior while completing the opaque API
-   cutover. Stage 5 already uses destination buffers for multiplayer iteration
-   and profile evaluation while retaining allocation-free two-player tuple
-   conveniences.
-2. Keep `Solver<'state>` opaque. Expose mode, iteration count, metadata, and
-   normalized average strategy through functions rather than writable table
-   fields.
-3. Move the old recursive implementation into the test project as a restricted
-   reference, then remove `StrategyNode`, dynamic string keys, action masks,
-   `p0`/`p1`, negamax, and the old public recursion functions from production.
-   Do not retain a second legacy engine or a permanent compatibility adapter.
-4. Treat this as a documented breaking API change. Add a concise migration
-   example mapping old callbacks to the dense metadata and local-action game
-   contract.
-5. Run an allocation audit through complete iterations. For a value-type state
-   and non-allocating game callbacks, both exhaustive and sampled training must
-   allocate zero bytes after initial depth growth. Reference-type game states
-   may allocate in caller code; report those bytes separately from solver
-   allocations.
-6. Verify memory from actual array lengths:
+1. Froze the final production surface documented above. It contains exactly
+   four `SolverMode` cases and no inheritance, plugins, optional average
+   tracking, numeric-type parameter, or graph-specific configuration.
+2. Retained the caller's static game type in an internal
+   `SolverEngine<'State,'Game>` while exposing only `Solver<'State>`. The
+   wrapper performs one stored call per public operation and introduces no new
+   dispatch at every tree node.
+3. Moved the old recursive source to the test project as `LegacyCFR.fs` and
+   linked it into the benchmark executable. `StrategyNode`, `cfr`,
+   `cfrSampled`, dynamic keys, global action masks, `p0`/`p1`, and negamax are
+   absent from the production assembly; no compatibility engine is shipped.
+4. Replaced caller-owned sampled-log sizing with geometric warm-up growth.
+   The log starts at `maxDepth * maxActionCount`, preserves sparse memory use,
+   and reuses its high-water arrays thereafter. This is the only material
+   deviation from the planned fixed construction inputs and removes a
+   game-specific capacity calculation from ordinary use.
+5. Added the migration mapping and runnable final-API examples. Fixed-budget
+   and tolerance-driven training retain cumulative per-player utilities,
+   caller-defined convergence measures, and mandatory average strategies.
+6. Audited memory from actual array lengths. Persistent numeric storage remains
 
    $$
    \text{persistent numeric bytes}=16M,
    $$
 
-   plus metadata, depth scratch, and exactly one mode-specific workspace.
-   Ensure exhaustive solvers do not own sample caches and sampled solvers do not
-   own the dense exhaustive delta array.
-7. Update `CFR.md` and the README to describe the final API, mode semantics,
-   memory formulas, convergence boundaries, and benchmark command.
+   plus 12-byte packed metadata rows, depth scratch, and exactly one selected
+   workspace. Exhaustive modes own no sampled cache or log; sampled modes own
+   no dense exhaustive regret-delta array.
 
-**Verification.**
+**Verification performed.**
 
-- The complete solution builds for the repository's target frameworks.
-- All Stage 1 through Stage 5 tests pass against the production API.
-- Public API inspection shows exactly four solver modes and no way to disable
-  average-strategy tracking.
-- Steady-state allocation tests pass for every mode.
-- Benchmark results include legacy-versus-production comparisons and show that
-  traversal work, rather than allocation or string hashing, dominates.
+- Both library target frameworks and the .NET 8 test and benchmark executables
+  built in Release with zero warnings.
+- All 77 tests passed. Production reflection checks found exactly four modes,
+  no public solver constructor, no exported packed table, and no legacy
+  `StrategyNode` in the production assembly.
+- Ten thousand warmed iterations through the opaque API allocated zero bytes
+  in each of CFR, CFR+, MCCFR, and MCCFR+; existing exhaustive, sampled, and
+  multiplayer allocation checks also remained zero.
+- Hidden matching pennies and Kuhn poker ran through the final surface; a
+  reduced Mini Dudo run verified the same migration path.
+- Seven alternating interleaved benchmark repetitions measured 273.334 ms and
+  76,256,000 allocated bytes for the legacy dictionary CFR+ path versus
+  135.523 ms and zero bytes for packed production CFR+. Production performed
+  two target traversals while the legacy comparison performed one.
+- The direct/final-public timing ratios ranged from 0.948 to 0.994 with zero
+  allocation on both sides. Because the machine was approximately 65%
+  throttled and normally above 50% background CPU load, those timing ratios are
+  provisional and do not establish a wrapper speedup or regression.
 
-**Exit criteria.** The legacy implementation is absent from the production
-assembly, the public API and documentation agree, all correctness and
-allocation gates pass, and a user can train and retrieve an average strategy
-in any of the four modes without knowing the internal table representation.
+**Exit criteria - passed.** The legacy implementation is absent from the
+production assembly, the public API and documentation agree, correctness and
+allocation gates pass, and callers can train and retrieve an average strategy
+in every mode without knowing the internal table representation.
 
 #### Stage 7: apply profile-guided single-thread optimization
 
@@ -2247,3 +2346,47 @@ algorithm.
 - Retained the two-player assumptions at the beginning of this document because
   that section intentionally explains the legacy `cfr.fs` functions; the later
   redesign sections document `CFRCore.fs` and its completed Stage 5 behavior.
+
+### 2026-07-14 - Stage 6: minimal production API cutover
+
+- Replaced the public generic engine constructor with opaque `Solver<'State>`
+  and the small `Solver` module surface: `create`, metadata accessors,
+  `runIteration`, `run`, `runUntil`, `evaluateAverage`, and
+  `averageStrategy`. The wrapper retains the caller's static game type in the
+  internal generic engine and crosses one stored operation boundary per public
+  call, never per tree node. Average-strategy tracking remains mandatory.
+- Moved the dictionary/string recursion to test-only `LegacyCFR.fs`, linked it
+  into the benchmark friend assembly, and removed `cfr.fs` from the production
+  project. Reflection tests verify that production exports neither a solver
+  constructor nor packed-table or legacy `StrategyNode` types and that exactly
+  four algorithm modes remain.
+- Removed game-specific sampled-delta capacity from construction. The sparse
+  index/value log starts at `maxDepth * maxActionCount`, doubles during warm-up
+  when needed, and reuses its high-water arrays. This preserves sparse sampled
+  memory and zero steady-state allocation while making ordinary construction
+  simpler. It is the material deviation from the fixed-capacity plan; the
+  former overflow regression became a growth-and-reuse regression.
+- Migrated hidden matching pennies, Kuhn poker, Mini Dudo, public benchmarks,
+  and production-boundary tests to the final API. Added migration guidance,
+  final signatures, mode semantics, convergence boundaries, memory formulas,
+  and build/test/benchmark commands to `CFR.md` and the README.
+- Built the complete Release solution for `net5.0`, `netstandard2.1`, and the
+  .NET 8 test and benchmark executables with zero warnings. All 77 tests passed.
+  Ten thousand warmed public iterations of CFR, CFR+, MCCFR, and MCCFR+
+  allocated zero bytes per mode; the existing internal and three-player
+  allocation checks also remained zero. Hidden matching pennies and Kuhn ran
+  at their full scripted budgets; Mini Dudo passed its reduced one-iteration
+  MCCFR+/20-iteration CFR API check.
+- Appended the Stage 6 benchmark rather than replacing earlier runs. Seven
+  alternating interleaved medians measured legacy dictionary CFR+ at 273.334
+  ms and 76,256,000 allocated bytes versus packed production CFR+ at 135.523
+  ms and zero bytes for 500 measured iterations after 100 warm-up iterations.
+  Production performed two target traversals while the legacy path performed
+  one. Direct/final-public ratios were 0.948 through 0.994 with zero allocation
+  on both sides; these timing ratios remain provisional because the machine was
+  approximately 65% throttled and normally above 50% background CPU load.
+- Verified actual array payloads on the 341-information-set, 1,364-slot
+  fixture: 21,824 persistent numeric bytes, 4,092 metadata bytes, 15,324 bytes
+  for the exhaustive workspace, and 6,332 bytes for the sampled workspace
+  after its log grew from 20 to a reusable 160 entries. Total exact payload was
+  41,240 bytes for exhaustive and 32,248 bytes for sampled modes.

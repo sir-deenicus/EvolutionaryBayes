@@ -7,6 +7,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="LegacyCFR.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -8,30 +8,30 @@ type SolverMode =
     | MCCFR
     | MCCFRPlus
 
-type TraversalKind =
+type internal TraversalKind =
     | Exhaustive
     | ExternalSampling
 
-type RegretTransform =
+type internal RegretTransform =
     | Signed
     | Clipped
 
-type AveragingKind =
+type internal AveragingKind =
     | Uniform
     | Linear
 
-type UpdateSchedule =
+type internal UpdateSchedule =
     | Simultaneous
     | Alternating
 
 [<Struct>]
-type ModeSemantics =
+type internal ModeSemantics =
     { Traversal: TraversalKind
       RegretTransform: RegretTransform
       Averaging: AveragingKind
       UpdateSchedule: UpdateSchedule }
 
-module Mode =
+module internal Mode =
     let semantics mode =
         match mode with
         | CFR ->
@@ -151,22 +151,22 @@ module Convergence =
             abs (progress.MeanUtilities.[player] - expectedValue)
 
 [<Struct>]
-type InfoSetMeta =
+type internal InfoSetMeta =
     { Owner: int
       Offset: int
       ActionCount: int }
 
-type SolverTables =
+type internal SolverTables =
     { Regrets: double[]
       StrategySums: double[] }
 
-type PackedTable =
+type internal PackedTable =
     { PlayerCount: int
       InfoSets: InfoSetMeta[]
       Tables: SolverTables
       SlotCount: int }
 
-module PackedTable =
+module internal PackedTable =
     let private validatePlayerCount playerCount =
         if playerCount <= 0 then
             invalidArg "playerCount" "Player count must be positive."
@@ -282,13 +282,13 @@ module PackedTable =
 
         ofMetadata playerCount metadata
 
-type TraversalScratch =
+type internal TraversalScratch =
     { Strategies: double[]
       Utilities: double[]
       AverageEpochs: int[]
       mutable Epoch: int }
 
-type ExhaustiveWorkspace =
+type internal ExhaustiveWorkspace =
     { Common: TraversalScratch
       RegretDeltas: double[]
       TouchedRows: int[]
@@ -296,16 +296,16 @@ type ExhaustiveWorkspace =
       mutable RegretEpoch: int
       mutable TouchedCount: int }
 
-type SampledWorkspace =
+type internal SampledWorkspace =
     { Common: TraversalScratch
       SampledActions: int[]
       SampleEpochs: int[]
-      DeltaIndices: int[]
-      DeltaValues: double[]
+      mutable DeltaIndices: int[]
+      mutable DeltaValues: double[]
       mutable SampleEpoch: int
       mutable DeltaCount: int }
 
-module Workspace =
+module internal Workspace =
     let private scratchLength maxDepth maxActionCount =
         if maxDepth <= 0 then
             invalidArg "maxDepth" "Maximum depth must be positive."
@@ -414,7 +414,24 @@ module Workspace =
 
     let appendDelta workspace index value =
         if workspace.DeltaCount = workspace.DeltaIndices.Length then
-            invalidOp "The sampled delta log capacity was exceeded."
+            let current = workspace.DeltaIndices.Length
+            let nextLength =
+                if current = 0 then
+                    4
+                elif current > Int32.MaxValue / 2 then
+                    if current = Int32.MaxValue then
+                        invalidOp "The sampled delta log exceeds the maximum array length."
+                    else
+                        Int32.MaxValue
+                else
+                    current * 2
+
+            let indices = Array.zeroCreate<int> nextLength
+            let values = Array.zeroCreate<double> nextLength
+            Array.Copy(workspace.DeltaIndices, indices, current)
+            Array.Copy(workspace.DeltaValues, values, current)
+            workspace.DeltaIndices <- indices
+            workspace.DeltaValues <- values
 
         let position = workspace.DeltaCount
         workspace.DeltaIndices.[position] <- index
@@ -453,7 +470,7 @@ module Workspace =
 
         resetDeltaLog workspace
 
-module Scalar =
+module internal Scalar =
     let inline private isFinite value =
         not (Double.IsNaN value || Double.IsInfinity value)
 
@@ -1514,7 +1531,7 @@ type internal SampledSolver<'State, 'Game when 'Game :> IGame<'State>>
 
 /// Finite sequential general-sum CFR solver. Construction selects a direct
 /// two-player fast path or the generic target-player schedule.
-type Solver<'State, 'Game when 'Game :> IGame<'State>>
+type internal SolverEngine<'State, 'Game when 'Game :> IGame<'State>>
     (
         mode: SolverMode,
         game: 'Game,
@@ -1709,7 +1726,7 @@ type Solver<'State, 'Game when 'Game :> IGame<'State>>
             sampledDeltaCapacity,
             seed: int
         ) =
-        Solver(
+        SolverEngine(
             mode,
             game,
             2,
@@ -1730,7 +1747,7 @@ type Solver<'State, 'Game when 'Game :> IGame<'State>>
             sampledDeltaCapacity,
             random: Random
         ) =
-        Solver(
+        SolverEngine(
             mode,
             game,
             2,
@@ -1752,7 +1769,7 @@ type Solver<'State, 'Game when 'Game :> IGame<'State>>
             sampledDeltaCapacity,
             seed: int
         ) =
-        Solver(
+        SolverEngine(
             mode,
             game,
             playerCount,
@@ -1911,6 +1928,15 @@ type Solver<'State, 'Game when 'Game :> IGame<'State>>
           ConvergenceError = lastError
           ConvergenceChecks = checks }
 
+    /// Advance the owned iteration sequence without constructing a reporting
+    /// result. This is the allocation-free primitive used by the public
+    /// runIteration function and by steady-state benchmarks.
+    member internal _.RunNextIteration(burnIn: int, root: 'State) =
+        if burnIn < 0 then
+            invalidArg "burnIn" "Burn-in cannot be negative."
+
+        recordIteration (iterationsCompleted + 1) burnIn root
+
     member _.AverageStrategy(infoSetId: int) =
         if infoSetId < 0 || infoSetId >= table.InfoSets.Length then
             invalidArg "infoSetId" "Information-set ID is outside the solver table."
@@ -1924,3 +1950,163 @@ type Solver<'State, 'Game when 'Game :> IGame<'State>>
             strategy
             0
         strategy
+
+// Friend tests and benchmarks retain direct access to the generic engine for
+// kernel-level oracle and boundary measurements. This abbreviation is erased
+// from the production assembly's public API.
+type internal Solver<'State, 'Game when 'Game :> IGame<'State>> =
+    SolverEngine<'State, 'Game>
+
+/// Opaque production solver. The internal generic engine retains the caller's
+/// static game type; this wrapper performs one indirect call per public
+/// operation and adds no dispatch inside the recursive traversal.
+[<Sealed>]
+type Solver<'State> internal
+    (
+        mode: SolverMode,
+        playerCount: int,
+        informationSets: unit -> InfoSetDefinition[],
+        iterationsCompleted: unit -> int,
+        runIteration: int -> 'State -> unit,
+        run: int -> int -> 'State -> TrainingResult,
+        runUntil:
+            int ->
+            int ->
+            'State ->
+            ConvergenceCheck ->
+            (TrainingProgress -> double) ->
+            TrainingResult,
+        evaluateAverage: 'State -> double[] -> unit,
+        averageStrategy: int -> double[]
+    ) =
+
+    member internal _.ModeValue = mode
+    member internal _.PlayerCountValue = playerCount
+    member internal _.InformationSetsValue = informationSets ()
+    member internal _.IterationsCompletedValue = iterationsCompleted ()
+    member internal _.RunIterationValue burnIn root = runIteration burnIn root
+    member internal _.RunValue iterations burnIn root = run iterations burnIn root
+
+    member internal _.RunUntilValue maxIterations burnIn root check measureError =
+        runUntil maxIterations burnIn root check measureError
+
+    member internal _.EvaluateAverageValue root utilities =
+        evaluateAverage root utilities
+
+    member internal _.AverageStrategyValue infoSetId =
+        averageStrategy infoSetId
+
+/// Minimal production API. Construction owns all mutable tables and workspace;
+/// callers see only game metadata, training/reporting operations, and the
+/// mandatory normalized average strategy.
+module Solver =
+    let private check (solver: Solver<'State>) =
+        if obj.ReferenceEquals(solver, null) then
+            nullArg "solver"
+
+        solver
+
+    let create
+        (mode: SolverMode)
+        (playerCount: int)
+        (game: 'Game)
+        (definitions: InfoSetDefinition[])
+        (maxDepth: int)
+        (maxActionCount: int)
+        (seed: int)
+        : Solver<'State>
+        when 'Game :> IGame<'State> =
+        if obj.ReferenceEquals(box game, null) then
+            nullArg "game"
+
+        let initialCapacity64 = int64 maxDepth * int64 maxActionCount
+
+        if initialCapacity64 > int64 Int32.MaxValue then
+            invalidArg "maxDepth" "Initial sampled workspace exceeds the maximum array length."
+
+        let sampledDeltaCapacity = max 1 (int initialCapacity64)
+        let engine: SolverEngine<'State, 'Game> =
+            SolverEngine<'State, 'Game>(
+                mode,
+                game,
+                playerCount,
+                definitions,
+                maxDepth,
+                maxActionCount,
+                sampledDeltaCapacity,
+                seed
+            )
+
+        Solver<'State>(
+            mode,
+            playerCount,
+            (fun () ->
+                Array.mapi
+                    (fun id row ->
+                        { Id = id
+                          Owner = row.Owner
+                          ActionCount = row.ActionCount })
+                    engine.Table.InfoSets),
+            (fun () -> engine.IterationsCompleted),
+            (fun burnIn root -> engine.RunNextIteration(burnIn, root)),
+            (fun iterations burnIn root -> engine.Train(iterations, burnIn, root)),
+            (fun maxIterations burnIn root check measureError ->
+                engine.TrainUntil(
+                    maxIterations,
+                    burnIn,
+                    root,
+                    check,
+                    measureError
+                )),
+            (fun root utilities ->
+                engine.EvaluateAverageProfileInto(root, utilities)),
+            (fun infoSetId -> engine.AverageStrategy infoSetId)
+        )
+
+    let mode (solver: Solver<'State>) = (check solver).ModeValue
+    let playerCount (solver: Solver<'State>) = (check solver).PlayerCountValue
+    let informationSets (solver: Solver<'State>) = (check solver).InformationSetsValue
+    let iterationsCompleted (solver: Solver<'State>) =
+        (check solver).IterationsCompletedValue
+
+    /// Run one additional iteration without allocating a progress result.
+    let runIteration (solver: Solver<'State>) (burnIn: int) (root: 'State) =
+        (check solver).RunIterationValue burnIn root
+
+    /// Run a fixed additional budget and return cumulative mean utilities.
+    let run
+        (solver: Solver<'State>)
+        (iterations: int)
+        (burnIn: int)
+        (root: 'State)
+        =
+        (check solver).RunValue iterations burnIn root
+
+    /// Run until the caller-defined error satisfies the convergence check or
+    /// the additional iteration budget is exhausted.
+    let runUntil
+        (solver: Solver<'State>)
+        (maxIterations: int)
+        (burnIn: int)
+        (root: 'State)
+        (convergenceCheck: ConvergenceCheck)
+        (measureError: TrainingProgress -> double)
+        =
+        (check solver).RunUntilValue
+            maxIterations
+            burnIn
+            root
+            convergenceCheck
+            measureError
+
+    /// Exactly evaluate the normalized average profile into caller storage.
+    let evaluateAverage
+        (solver: Solver<'State>)
+        (root: 'State)
+        (utilities: double[])
+        =
+        (check solver).EvaluateAverageValue root utilities
+
+    /// Return a newly allocated normalized average-strategy row.
+    let averageStrategy (solver: Solver<'State>) (infoSetId: int) =
+        (check solver).AverageStrategyValue infoSetId

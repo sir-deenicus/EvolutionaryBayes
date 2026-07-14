@@ -81,20 +81,19 @@ let informationSets =
        { Id = 1; Owner = 1; ActionCount = 2 } |]
 
 let solver =
-    Solver<State, IGame<State>>(
-        SolverMode.CFR,
-        game,
-        informationSets,
-        2,      // maximum number of nonterminal levels
-        2,      // maximum actions at a node
-        4,      // sampled-delta capacity; unused by exhaustive CFR
+    Solver.create
+        SolverMode.CFR
+        2
+        game
+        informationSets
+        2       // maximum number of nonterminal levels
+        2       // maximum actions at a node
         1729    // random seed; unused by exhaustive CFR
-    )
 
-let training = solver.Train(10_000, 0, Player0Turn)
+let training = Solver.run solver 10_000 0 Player0Turn
 
-let player0Strategy = solver.AverageStrategy 0
-let player1Strategy = solver.AverageStrategy 1
+let player0Strategy = Solver.averageStrategy solver 0
+let player1Strategy = Solver.averageStrategy solver 1
 
 let showStrategy player (strategy: double[]) =
     printfn

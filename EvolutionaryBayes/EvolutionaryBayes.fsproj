@@ -8,7 +8,6 @@
 
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
-    <None Include="kuhn-poker.fsx" />
     <None Include="evosim.fsx" />
     <None Include="minregret.fsx" />
     <Compile Include="RegretMinimization.fs" />
@@ -16,7 +15,6 @@
     <Compile Include="Distributions.fs" />
     <Compile Include="Helpers.fs" />
     <Compile Include="CFRCore.fs" />
-    <Compile Include="cfr.fs" />
     <Compile Include="MutationKernels.fs" />
     <Compile Include="MetropolisHastings.fs" />
     <Compile Include="ParticleFilters.fs" />

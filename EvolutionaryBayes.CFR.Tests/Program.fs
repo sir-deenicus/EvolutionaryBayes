@@ -1,7 +1,8 @@
-module EvolutionaryBayes.CFR.Tests
+module EvolutionaryBayes.CFRTests
 
 open System
 open System.Collections.Generic
+open Microsoft.FSharp.Reflection
 open EvolutionaryBayes.CFR
 open EvolutionaryBayes.CFRCore
 
@@ -1152,7 +1153,7 @@ let sampledSolverTests () =
         let invalid = Solver<int, ChanceOnlyGame>(SolverMode.MCCFR, ChanceOnlyGame 1.2, [||], 1, 2, 1, 1)
         assertThrows (fun () -> invalid.RunIteration(1, 0, 0) |> ignore))
 
-    test "sampled/validation/rejects-random-draw-and-log-overflow" (fun () ->
+    test "sampled/validation/rejects-random-draw-and-grows-log" (fun () ->
         let invalidRandom =
             Solver<int, MatrixGame>(
                 SolverMode.MCCFR,
@@ -1165,17 +1166,20 @@ let sampledSolverTests () =
             )
         assertThrows (fun () -> invalidRandom.RunIteration(1, 0, 0) |> ignore)
 
-        let undersized =
-            Solver<int, MatrixGame>(
+        let growing =
+            SampledSolver<int, MatrixGame>(
                 SolverMode.MCCFR,
                 MatrixGame(utilities0, utilities1),
-                definitions,
+                PackedTable.create 2 definitions,
                 2,
                 2,
                 1,
-                1
+                Random 1
             )
-        assertThrows (fun () -> undersized.RunIteration(1, 0, 0) |> ignore))
+        growing.RunIteration(1, 0, 0) |> ignore
+        assertTrue
+            "The sparse delta log must grow during warm-up rather than require game-specific sizing."
+            (growing.Workspace.DeltaIndices.Length > 1))
 
     test "sampled/allocation/both-modes-zero-after-warmup" (fun () ->
         for mode in [| SolverMode.MCCFR; SolverMode.MCCFRPlus |] do
@@ -1376,6 +1380,103 @@ let multiplayerSolverTests () =
                 $"Expected zero steady-state multiplayer bytes for {mode}, measured {allocated}."
                 (allocated = 0L))
 
+let productionApiTests () =
+    let definitions =
+        [| { Id = 0; Owner = 0; ActionCount = 2 }
+           { Id = 1; Owner = 1; ActionCount = 2 } |]
+
+    let create mode =
+        Solver.create
+            mode
+            2
+            (MatrixGame(
+                [| 2.0; 2.0; 2.0; 2.0 |],
+                [| 5.0; 5.0; 5.0; 5.0 |]
+            ))
+            definitions
+            2
+            2
+            1729
+
+    test "production/api/is-opaque-and-has-exactly-four-modes" (fun () ->
+        let modes = FSharpType.GetUnionCases typeof<SolverMode>
+        assertTrue "The production API must expose exactly four algorithm modes." (modes.Length = 4)
+        assertTrue
+            "Solver construction must go through Solver.create."
+            (typeof<Solver<int>>.GetConstructors().Length = 0)
+
+        let assembly = typeof<SolverMode>.Assembly
+        assertTrue
+            "The legacy StrategyNode type must not be present in production."
+            (isNull (assembly.GetType("EvolutionaryBayes.CFR+StrategyNode")))
+        assertTrue
+            "Packed tables must not be part of the public API."
+            (assembly.GetExportedTypes()
+             |> Array.forall (fun item -> item.Name <> "PackedTable")))
+
+    test "production/api/owns-iteration-and-reporting-surface" (fun () ->
+        let solver = create SolverMode.CFR
+        assertTrue "Mode accessor disagrees with construction." (Solver.mode solver = SolverMode.CFR)
+        assertTrue "Player-count accessor disagrees with construction." (Solver.playerCount solver = 2)
+        assertTrue "A new solver must start at iteration zero." (Solver.iterationsCompleted solver = 0)
+
+        Solver.runIteration solver 0 0
+        assertTrue "runIteration must own and advance the sequence." (Solver.iterationsCompleted solver = 1)
+
+        let result = Solver.run solver 9 0 0
+        assertTrue "Fixed-budget training did not advance ten total iterations." (result.IterationsCompleted = 10)
+        assertArrayNear 1e-12 [| 2.0; 5.0 |] result.MeanUtilities
+
+        let utilities = Array.zeroCreate 2
+        Solver.evaluateAverage solver 0 utilities
+        assertArrayNear 1e-12 [| 2.0; 5.0 |] utilities
+        assertArrayNear 1e-12 [| 0.5; 0.5 |] (Solver.averageStrategy solver 0))
+
+    test "production/api/metadata-is-read-only-copy" (fun () ->
+        let solver = create SolverMode.CFR
+        let first = Solver.informationSets solver
+        first.[0] <- { first.[0] with ActionCount = 99 }
+        let second = Solver.informationSets solver
+        assertTrue "Metadata access must not expose mutable solver state." (second.[0].ActionCount = 2))
+
+    test "production/api/convergence-surface" (fun () ->
+        let solver = create SolverMode.CFR
+        let check = ConvergenceCheck.create 0.0 1
+        let result =
+            Solver.runUntil
+                solver
+                10
+                0
+                0
+                check
+                (Convergence.utilityError 0 2.0)
+        assertTrue "Known-value convergence should stop after the first check." result.Converged
+        assertTrue "Convergence should own exactly one iteration here." (result.IterationsRun = 1))
+
+    test "production/allocation/all-modes-zero-after-warmup" (fun () ->
+        for mode in
+            [| SolverMode.CFR
+               SolverMode.CFRPlus
+               SolverMode.MCCFR
+               SolverMode.MCCFRPlus |] do
+            let solver = create mode
+
+            for _ in 1..100 do
+                Solver.runIteration solver 0 0
+
+            GC.Collect()
+            GC.WaitForPendingFinalizers()
+            GC.Collect()
+            let before = GC.GetAllocatedBytesForCurrentThread()
+
+            for _ in 1..10_000 do
+                Solver.runIteration solver 0 0
+
+            let allocated = GC.GetAllocatedBytesForCurrentThread() - before
+            assertTrue
+                $"Expected zero public-path bytes for {mode}, measured {allocated}."
+                (allocated = 0L))
+
 [<EntryPoint>]
 let main _ =
     helperTests ()
@@ -1386,5 +1487,6 @@ let main _ =
     exhaustiveSolverTests ()
     sampledSolverTests ()
     multiplayerSolverTests ()
+    productionApiTests ()
     printfn "%d test(s) failed." failures
     if failures = 0 then 0 else 1

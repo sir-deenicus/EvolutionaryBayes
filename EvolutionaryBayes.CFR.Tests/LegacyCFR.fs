@@ -1,5 +1,7 @@
 ﻿module EvolutionaryBayes.CFR
 
+// Test-only reference implementation retained for migration and benchmark
+// comparisons. Production code must use EvolutionaryBayes.CFRCore.
 open Prelude.Common
 open Prelude.Math
 open System

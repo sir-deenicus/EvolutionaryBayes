@@ -143,33 +143,33 @@ let informationSets =
           Owner = actor history
           ActionCount = actionCount history })
 
-let createSolver mode sampledDeltaCapacity =
-    Solver<State, IGame<State>>(
-        mode,
-        game,
-        informationSets,
-        14,     // chance, twelve possible claims, and Dudo
-        36,     // all ordered pairs of dice at the chance node
-        sampledDeltaCapacity,
+let createSolver mode =
+    Solver.create
+        mode
+        2
+        game
+        informationSets
+        14      // chance, twelve possible claims, and Dudo
+        36      // all ordered pairs of dice at the chance node
         1729
-    )
 
 let expectedValue = -7.0 / 258.0
 
-let train mode iterations burnIn sampledDeltaCapacity tolerance =
-    let solver = createSolver mode sampledDeltaCapacity
+let train mode iterations burnIn tolerance =
+    let solver = createSolver mode
     let convergence = ConvergenceCheck.create tolerance iterations
     let result =
-        solver.TrainUntil(
-            iterations,
-            burnIn,
-            root,
-            convergence,
-            Convergence.utilityError 0 expectedValue
-        )
+        Solver.runUntil
+            solver
+            iterations
+            burnIn
+            root
+            convergence
+            (Convergence.utilityError 0 expectedValue)
 
-    let struct (profileUtility0, _) = solver.EvaluateAverageProfile root
-    struct (result, profileUtility0)
+    let utilities = Array.zeroCreate 2
+    Solver.evaluateAverage solver root utilities
+    struct (result, utilities.[0])
 
 // Small rule checks guard the two details most likely to be implemented
 // incorrectly: claim ordering and wild ones. Terminal utility is zero-sum by
@@ -214,14 +214,13 @@ let iterationArg index fallback =
 let mccfrIterations = iterationArg 1 1_000_000
 let cfrIterations = iterationArg 2 500
 
-// MCCFR+ samples chance and the opponent. Its exact per-target delta bound is
-// 4,095 slots. Exhaustive CFR ignores the sampled capacity, so one slot is
-// sufficient to satisfy the shared constructor.
+// MCCFR+ samples chance and the opponent. Its sparse sampled-delta log grows
+// during warm-up and is then reused without steady-state allocation.
 let struct (mccfrResult, mccfrProfileValue) =
-    train SolverMode.MCCFRPlus mccfrIterations (mccfrIterations / 10) 4_095 0.006
+    train SolverMode.MCCFRPlus mccfrIterations (mccfrIterations / 10) 0.006
 
 let struct (cfrResult, cfrProfileValue) =
-    train SolverMode.CFR cfrIterations 0 1 0.002
+    train SolverMode.CFR cfrIterations 0 0.002
 
 if mccfrIterations >= 1_000_000
    && not mccfrResult.Converged then

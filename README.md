@@ -109,8 +109,30 @@ However, one area where this library can be useful is doing lightweight probabil
 
 # Regret Learning
 
-For the repository's two-player game solver, see
-[Counterfactual Regret Minimization in `cfr.fs`](CFR.md).
+For the repository's CFR/MCCFR solver, including finite sequential
+$N$-player general-sum games, explicit chance nodes, and the optimized
+two-player path, see [Counterfactual Regret Minimization](CFR.md).
+
+The production surface exposes four explicit modes: `CFR`, `CFRPlus`,
+`MCCFR`, and `MCCFRPlus`. `Solver.create` returns an opaque solver that owns
+iteration numbering, packed regret and mandatory average-strategy tables,
+convergence checks, and reusable traversal workspace. Games provide dense
+local legal actions through `IGame<'State>`; no dictionary keys, strings, or
+Boolean action masks enter the solver hot path.
+
+The smallest complete adapter is
+[`hidden-matching-pennies.fsx`](EvolutionaryBayes.CFR.Tests/games/hidden-matching-pennies.fsx).
+Kuhn poker and Mini Dudo in the same directory demonstrate explicit chance,
+exact average-profile evaluation, and tolerance-driven training.
+
+```powershell
+dotnet build EvolutionaryBayes.sln -c Release -v:minimal
+dotnet run --project EvolutionaryBayes.CFR.Tests -c Release
+dotnet run --project EvolutionaryBayes.CFR.Benchmarks -c Release -- --revision <revision>
+```
+
+Auditable runtime, memory, and allocation results are consolidated in
+[`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
 
 

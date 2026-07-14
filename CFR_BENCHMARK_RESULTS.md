@@ -406,3 +406,79 @@ Only sampled multiplayer modes own the additional `double[3]` exact-average
 reach vector, adding 24 bytes. Two-player solvers do not allocate that vector.
 Persistent regret/strategy tables and packed metadata remain unchanged at
 $16M$ numeric bytes plus metadata for $M$ legal slots.
+
+## 2026-07-14
+
+### Stage 6 - minimal production API cutover
+
+- Source revision: `98c99dc` plus the Stage 6 working-tree implementation
+- Working-tree qualification: includes the opaque production API, test-only
+  legacy move, growable sampled-delta log, migrated examples, tests, benchmark,
+  and documentation; unrelated repository edits remained present but were not
+  part of either measured executable
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+- Seed: `1729`
+
+The machine remained approximately 65% CPU/power throttled and normally above
+50% background CPU load. Thermal state was not available. Timings are therefore
+provisional even though each comparison alternated order and reports the median
+of seven interleaved repetitions. Allocation counts, node schedules, and exact
+array payloads are the stronger evidence.
+
+The common fixture has four actions, terminal depth five, 341 information
+sets, and 1,364 legal slots. Every timing sample ran 500 measured iterations
+after 100 warm-up iterations. The legacy comparison uses its allocating
+dictionary, string-history, global-action-mask CFR+ traversal. Production CFR+
+uses the final opaque `Solver.runIteration` path and performs two target-player
+traversals, whereas the legacy comparison performs one recursive traversal.
+
+| Variant | Median elapsed ms | Median allocated bytes | Allocated bytes/iteration |
+| --- | ---: | ---: | ---: |
+| Legacy dictionary CFR+ | 273.334 | 76,256,000 | 152,512 |
+| Production packed CFR+ | 135.523 | 0 | 0 |
+
+The production median is 50.4% lower despite performing two target traversals,
+and it eliminates all 76.3 MB of measured steady-state allocation. This is a
+same-session structural comparison, but absolute throughput remains
+provisional under the recorded machine conditions.
+
+The opaque-boundary check compares each direct internal specialized solver
+with the final public wrapper on identical tables and traversal schedules.
+Both sides perform 500 measured iterations after 100 warm-up iterations, with
+seven paired alternating-order samples.
+
+| Mode | Direct median ms | Public median ms | Public/direct | Direct allocated bytes | Public allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CFR | 96.119 | 91.119 | 0.948 | 0 | 0 |
+| CFR+ | 125.242 | 124.536 | 0.994 | 0 | 0 |
+| MCCFR | 12.146 | 11.813 | 0.973 | 0 | 0 |
+| MCCFR+ | 14.621 | 14.316 | 0.979 | 0 | 0 |
+
+The public medians happen to be lower in this run, but the wrapper cannot make
+the shared traversal faster; these ratios demonstrate timing variability, not
+a speedup. The reliable result is that one operation-level opaque dispatch
+introduces no observed allocation and no consistent measurable regression.
+
+Exact payloads below come from actual allocated array lengths after the sampled
+solver's 100-iteration warm-up. Its delta log began at 20 entries
+(`maxDepth * maxActionCount`) and reached a reusable 160-entry high-water
+capacity. A live solver owns the persistent tables and metadata plus only the
+workspace selected by its mode.
+
+| Component | Exact payload bytes |
+| --- | ---: |
+| Persistent regrets + strategy sums | 21,824 |
+| Information-set metadata | 4,092 |
+| Exhaustive workspace | 15,324 |
+| Sampled workspace after warm-up | 6,332 |
+| Exhaustive solver total | 41,240 |
+| Sampled solver total | 32,248 |
+
+All 77 tests passed. Separate public-path allocation checks ran 10,000 warmed
+iterations of CFR, CFR+, MCCFR, and MCCFR+ and measured zero bytes for every
+mode. Existing exhaustive, sampled, and three-player allocation checks also
+remained zero.

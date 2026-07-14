@@ -120,20 +120,19 @@ let informationSets =
           ActionCount = 2 })
 
 let solver =
-    Solver<State, IGame<State>>(
-        SolverMode.CFR,
-        game,
-        informationSets,
-        4,      // chance plus at most three player decisions
-        6,      // six ordered deals at the chance node
-        12,     // sampled-delta capacity; unused by exhaustive CFR
+    Solver.create
+        SolverMode.CFR
+        2
+        game
+        informationSets
+        4       // chance plus at most three player decisions
+        6       // six ordered deals at the chance node
         1729    // random seed; unused by exhaustive CFR
-    )
 
-let training = solver.Train(50_000, 0, Deal)
+let training = Solver.run solver 50_000 0 Deal
 
 let showRow player card decision infoSetId =
-    let strategy = solver.AverageStrategy infoSetId
+    let strategy = Solver.averageStrategy solver infoSetId
     printfn
         "Player %d, %s, %-14s: check/fold %.4f, bet/call %.4f"
         player
@@ -150,7 +149,9 @@ for card in [ Jack; Queen; King ] do
     showRow 1 card "facing bet" (6 + cardIndex card)
     showRow 0 card "check, then bet" (9 + cardIndex card)
 
-let struct (value, _) = solver.EvaluateAverageProfile Deal
+let utilities = Array.zeroCreate 2
+Solver.evaluateAverage solver Deal utilities
+let value = utilities.[0]
 let equilibriumValue = -1.0 / 18.0
 printfn "Average-profile value for player 0: %.6f (equilibrium %.6f)" value equilibriumValue
 
