@@ -3,6 +3,7 @@ module EvolutionaryBayes.CFRTests
 open System
 open System.Collections.Generic
 open Microsoft.FSharp.Reflection
+open EvolutionaryBayes
 open EvolutionaryBayes.CFR
 open EvolutionaryBayes.CFRCore
 
@@ -259,6 +260,10 @@ type ThreePlayerChanceGame(probability0: double) =
 type OutOfRangeRandom() =
     inherit Random()
     override _.Sample() = 1.0
+
+type FixedRandom(value: float) =
+    inherit Random()
+    override _.Sample() = value
 
 [<Struct>]
 type ChanceThenPlayerGame =
@@ -1477,6 +1482,687 @@ let productionApiTests () =
                 $"Expected zero public-path bytes for {mode}, measured {allocated}."
                 (allocated = 0L))
 
+let onlineLearningTests () =
+    let probabilities (learner: ExternalRegretMinimizer<'Action>) =
+        learner.Strategy |> Array.map snd
+
+    let averageProbabilities (learner: ExternalRegretMinimizer<'Action>) =
+        learner.AverageStrategy |> Array.map snd
+
+    let banditProbabilities (learner: BanditRegretMinimizer<'Action>) =
+        learner.Strategy |> Array.map snd
+
+    let averageBanditProbabilities (learner: BanditRegretMinimizer<'Action>) =
+        learner.AverageStrategy |> Array.map snd
+
+    test "online/mwua/exponential-one-step-and-pre-update-average" (fun () ->
+        let learner = Mwua.create 1.0 [| "left"; "right" |]
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (probabilities learner)
+
+        learner.Learn(fun action -> if action = "left" then 1.0 else 0.0)
+
+        let expectedLeft = Math.E / (Math.E + 1.0)
+        assertArrayNear 1e-12 [| expectedLeft; 1.0 - expectedLeft |] (probabilities learner)
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (averageProbabilities learner)
+        assertTrue "MWUA must count one successful update." (learner.Rounds = 1L))
+
+    test "online/mwua/common-utility-shifts-do-not-change-strategy" (fun () ->
+        let baseline = Mwua.create 0.25 [| 0; 1; 2 |]
+        let shifted = Mwua.create 0.25 [| 0; 1; 2 |]
+        baseline.Learn(fun action -> float action)
+        shifted.Learn(fun action -> float action + 100.0)
+        assertArrayNear 1e-12 (probabilities baseline) (probabilities shifted))
+
+    test "online/mwua/learn-batch-is-sequential-learn" (fun () ->
+        let batch = Mwua.create 0.3 [| 0; 1 |]
+        let scalar = Mwua.create 0.3 [| 0; 1 |]
+
+        let feedback =
+            [| (fun action -> if action = 0 then 1.0 else 0.0)
+               (fun action -> if action = 0 then 0.0 else 2.0)
+               (fun action -> if action = 0 then -1.0 else 0.5) |]
+
+        batch.LearnBatch feedback
+        for utility in feedback do scalar.Learn utility
+
+        assertArrayNear 0.0 (probabilities scalar) (probabilities batch)
+        assertArrayNear 0.0 (averageProbabilities scalar) (averageProbabilities batch)
+        assertTrue "LearnBatch must advance once per feedback vector." (batch.Rounds = 3L))
+
+    test "online/mwua/reset-restores-prior-and-history" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some [| 3.0; 1.0 |]
+                Random = Some(Random 123) }
+
+        let learner = Mwua.createWith options 0.5 [| "a"; "b" |]
+        learner.Learn(fun action -> if action = "a" then 0.0 else 4.0)
+        learner.Reset()
+
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (probabilities learner)
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (averageProbabilities learner)
+        assertTrue "Reset must clear the completed-round count." (learner.Rounds = 0L))
+
+    test "online/mwua/long-run-log-weights-remain-finite" (fun () ->
+        let learner = Mwua.create 1.0 [| 0; 1 |]
+
+        for _ = 1 to 10_000 do
+            learner.Learn(fun action -> if action = 0 then 1.0 else 0.0)
+
+        let strategy = probabilities learner
+        assertTrue "The dominant MWUA action must retain finite unit mass." (strategy.[0] = 1.0)
+        assertTrue "The dominated MWUA action must remain a valid probability." (strategy.[1] >= 0.0)
+        assertTrue "Long-run MWUA probabilities must remain finite." (strategy |> Array.forall Double.IsFinite))
+
+    test "online/regret-matching/standard-uses-positive-external-regret" (fun () ->
+        let learner = RegretMatching.create [| 0; 1 |]
+        learner.Learn(fun action -> if action = 0 then 1.0 else 0.0)
+        assertArrayNear 0.0 [| 1.0; 0.0 |] (probabilities learner)
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (averageProbabilities learner)
+
+        learner.Learn(fun action -> if action = 0 then 0.0 else 1.0)
+        assertArrayNear 1e-12 [| 0.5; 0.5 |] (probabilities learner))
+
+    test "online/regret-matching/plus-clips-each-round" (fun () ->
+        let learner = RegretMatching.createPlus [| 0; 1 |]
+        learner.Learn(fun action -> if action = 0 then 1.0 else 0.0)
+        learner.Learn(fun action -> if action = 0 then 0.0 else 1.0)
+        assertArrayNear 1e-12 [| 1.0 / 3.0; 2.0 / 3.0 |] (probabilities learner))
+
+    test "online/regret-matching/no-positive-regret-uses-configured-fallback" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some [| 1.0; 3.0 |] }
+
+        let learner = RegretMatching.createWith options [| "a"; "b" |]
+        learner.Learn(fun _ -> 7.0)
+        assertArrayNear 0.0 [| 0.25; 0.75 |] (probabilities learner))
+
+    test "online/api/rejects-invalid-construction-and-feedback-atomically" (fun () ->
+        assertThrows (fun () -> Mwua.create 0.0 [| 0 |] |> ignore)
+        assertThrows (fun () -> RegretMatching.create [||] |> ignore)
+
+        let badOptions =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some [| 1.0; -1.0 |] }
+
+        assertThrows (fun () -> Mwua.createWith badOptions 0.1 [| 0; 1 |] |> ignore)
+
+        let learner = RegretMatching.create [| 0; 1 |]
+        let before = probabilities learner
+        assertThrows (fun () -> learner.Learn(fun _ -> Double.NaN))
+        assertArrayNear 0.0 before (probabilities learner)
+        assertTrue "Rejected feedback must not advance the learner." (learner.Rounds = 0L))
+
+    test "online/api/strategy-snapshots-do-not-expose-state" (fun () ->
+        let learner = Mwua.create 0.1 [| "a"; "b" |]
+        let exposed = learner.Strategy
+        exposed.[0] <- "changed", 1.0
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (probabilities learner))
+
+    test "online/exp3/importance-weighted-one-step-and-pre-update-average" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let learner = Exp3.createWith options 0.2 0.1 [| "left"; "right" |]
+        let choice = learner.Choose()
+        assertTrue "The fixed draw must select the left action." (choice.Action = "left")
+        assertNear 0.0 0.5 choice.Probability
+        learner.Learn(choice, 1.0)
+
+        let exploitationLeft = exp 0.4 / (exp 0.4 + 1.0)
+        let expectedLeft = 0.9 * exploitationLeft + 0.05
+        assertArrayNear 1e-12 [| expectedLeft; 1.0 - expectedLeft |] (banditProbabilities learner)
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (averageBanditProbabilities learner)
+        assertTrue "EXP3 must count one successfully learned choice." (learner.Rounds = 1L))
+
+    test "online/exp3/choice-tokens-reject-outstanding-foreign-and-reused-input" (fun () ->
+        let options draw =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom draw) }
+
+        let first = Exp3.createWith (options 0.25) 0.2 0.1 [| 0; 1 |]
+        let second = Exp3.createWith (options 0.75) 0.2 0.1 [| 0; 1 |]
+        let firstChoice = first.Choose()
+        let secondChoice = second.Choose()
+
+        assertThrows (fun () -> first.Choose() |> ignore)
+        assertThrows (fun () -> first.Learn(secondChoice, 1.0))
+        first.Learn(firstChoice, 1.0)
+        assertThrows (fun () -> first.Learn(firstChoice, 1.0))
+        second.Learn(secondChoice, 0.0))
+
+    test "online/exp3/rejected-reward-is-atomic-and-can-be-retried" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let learner = Exp3.createWith options 0.2 0.1 [| 0; 1 |]
+        let choice = learner.Choose()
+        let before = banditProbabilities learner
+        assertThrows (fun () -> learner.Learn(choice, Double.NaN))
+        assertArrayNear 0.0 before (banditProbabilities learner)
+        assertTrue "Rejected rewards must not advance EXP3." (learner.Rounds = 0L)
+        learner.Learn(choice, 0.5)
+        assertTrue "A choice must remain usable after rejected reward data." (learner.Rounds = 1L))
+
+    test "online/exp3/learn-batch-is-sequential-choose-evaluate-learn" (fun () ->
+        let options seed =
+            { ExternalRegretOptions.defaults with
+                Random = Some(Random seed) }
+
+        let batch = Exp3.createWith (options 1234) 0.15 0.2 [| 0; 1; 2 |]
+        let scalar = Exp3.createWith (options 1234) 0.15 0.2 [| 0; 1; 2 |]
+
+        let feedback =
+            Array.init 250 (fun round ->
+                fun action ->
+                    if action = round % 3 then 1.0
+                    elif action = (round + 1) % 3 then 0.5
+                    else 0.0)
+
+        batch.LearnBatch feedback
+
+        for reward in feedback do
+            let choice = scalar.Choose()
+            scalar.Learn(choice, reward choice.Action)
+
+        assertArrayNear 0.0 (banditProbabilities scalar) (banditProbabilities batch)
+        assertArrayNear 0.0 (averageBanditProbabilities scalar) (averageBanditProbabilities batch)
+        assertTrue "LearnBatch must advance once per reward function." (batch.Rounds = 250L))
+
+    test "online/exp3/failed-batch-round-is-cancelled" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let learner = Exp3.createWith options 0.2 0.1 [| 0; 1 |]
+        assertThrows (fun () -> learner.LearnBatch [ (fun _ -> 1.0); (fun _ -> -0.1) ])
+        assertTrue "Earlier successful batch rounds must remain learned." (learner.Rounds = 1L)
+
+        let recoveryChoice = learner.Choose()
+        learner.Learn(recoveryChoice, 0.0)
+        assertTrue "A failed local batch choice must not leave the learner locked." (learner.Rounds = 2L))
+
+    test "online/exp3/reset-restores-prior-mixture-and-invalidates-choice" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some [| 3.0; 1.0 |]
+                Random = Some(FixedRandom 0.25) }
+
+        let learner = Exp3.createWith options 0.2 0.2 [| "a"; "b" |]
+        assertArrayNear 1e-12 [| 0.7; 0.3 |] (banditProbabilities learner)
+        let stale = learner.Choose()
+        learner.Reset()
+
+        assertArrayNear 1e-12 [| 0.7; 0.3 |] (banditProbabilities learner)
+        assertArrayNear 1e-12 [| 0.7; 0.3 |] (averageBanditProbabilities learner)
+        assertTrue "Reset must clear EXP3 history." (learner.Rounds = 0L)
+        assertThrows (fun () -> learner.Learn(stale, 1.0)))
+
+    test "online/exp3/explicit-exploration-survives-long-run-learning" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.0) }
+
+        let learner = Exp3.createWith options 0.2 0.1 [| 0; 1 |]
+
+        for _ = 1 to 10_000 do
+            let choice = learner.Choose()
+            learner.Learn(choice, if choice.Action = 0 then 1.0 else 0.0)
+
+        let strategy = banditProbabilities learner
+        assertTrue "The consistently rewarded action must dominate exploitation." (strategy.[0] > 0.949)
+        assertTrue "Explicit exploration must retain gamma/K probability." (strategy.[1] >= 0.05)
+        assertTrue "Long-run EXP3 probabilities must remain finite." (strategy |> Array.forall Double.IsFinite)
+        assertNear 1e-12 1.0 (Array.sum strategy))
+
+    test "online/exp3/seeded-sampling-is-reproducible" (fun () ->
+        let options () =
+            { ExternalRegretOptions.defaults with
+                Random = Some(Random 9876) }
+
+        let first = Exp3.createWith (options ()) 0.1 0.15 [| 0; 1; 2 |]
+        let second = Exp3.createWith (options ()) 0.1 0.15 [| 0; 1; 2 |]
+
+        for _ = 1 to 200 do
+            let firstChoice = first.Choose()
+            let secondChoice = second.Choose()
+            assertTrue "Equal seeds and state must sample equal actions." (firstChoice.Action = secondChoice.Action)
+            assertNear 0.0 firstChoice.Probability secondChoice.Probability
+            let reward = if firstChoice.Action = 2 then 1.0 else 0.25
+            first.Learn(firstChoice, reward)
+            second.Learn(secondChoice, reward)
+
+        assertArrayNear 0.0 (banditProbabilities first) (banditProbabilities second))
+
+    test "online/exp3/rejects-invalid-parameters-and-incomplete-priors" (fun () ->
+        assertThrows (fun () -> Exp3.create 0.0 0.1 [| 0; 1 |] |> ignore)
+        assertThrows (fun () -> Exp3.create 0.1 0.0 [| 0; 1 |] |> ignore)
+        assertThrows (fun () -> Exp3.create 0.1 Double.Epsilon [| 0; 1 |] |> ignore)
+        assertThrows (fun () -> Exp3.create 0.1 1.1 [| 0; 1 |] |> ignore)
+
+        let incompletePrior =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some [| 1.0; 0.0 |] }
+
+        assertThrows (fun () -> Exp3.createWith incompletePrior 0.1 0.1 [| 0; 1 |] |> ignore))
+
+    test "online/context-exact/mwua-learns-first-observation-and-isolates-contexts" (fun () ->
+        let learner: ExactContextExternalRegretMinimizer<string, string> =
+            ContextualMwua.create 1.0 [| "left"; "right" |]
+
+        learner.Learn("red", fun action -> if action = "left" then 1.0 else 0.0)
+
+        let red = learner.Strategy("red") |> Array.map snd
+        let expectedLeft = Math.E / (Math.E + 1.0)
+        assertArrayNear 1e-12 [| expectedLeft; 1.0 - expectedLeft |] red
+        assertTrue "The first exact-context observation must be learned." (learner.Rounds("red") = 1L)
+
+        let blue = learner.Strategy("blue") |> Array.map snd
+        assertArrayNear 0.0 [| 0.5; 0.5 |] blue
+        assertTrue "A new exact context must have independent state." (learner.Rounds("blue") = 0L)
+        assertTrue "Both exact contexts must be retained." (learner.ContextCount = 2))
+
+    test "online/context-exact/regret-matching-batch-is-sequential-and-resettable" (fun () ->
+        let learner: ExactContextExternalRegretMinimizer<string, int> =
+            ContextualRegretMatching.create [| 0; 1 |]
+
+        learner.LearnBatch
+            [ "a", (fun action -> if action = 0 then 1.0 else 0.0)
+              "b", (fun action -> if action = 1 then 1.0 else 0.0)
+              "a", (fun action -> if action = 1 then 1.0 else 0.0) ]
+
+        assertTrue "Context a must receive both of its rounds." (learner.Rounds("a") = 2L)
+        assertTrue "Context b must receive its first round." (learner.Rounds("b") = 1L)
+        assertArrayNear 0.0 [| 0.0; 1.0 |] (learner.Strategy("b") |> Array.map snd)
+
+        learner.Reset()
+        assertTrue "Reset must clear every exact-context history." (learner.Rounds("a") = 0L && learner.Rounds("b") = 0L)
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (learner.Strategy("a") |> Array.map snd))
+
+    test "online/context-exact/exp3-routes-choice-to-issuing-context" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let learner: ExactContextBanditRegretMinimizer<string, string> =
+            ContextualExp3.createWith options 0.2 0.1 [| "left"; "right" |]
+
+        let choice = learner.Choose("day")
+        assertTrue "The choice must retain its context." (choice.Context = "day")
+        assertTrue "The fixed draw must select left." (choice.Action = "left")
+        learner.Learn(choice, 1.0)
+
+        let exploitationLeft = exp 0.4 / (exp 0.4 + 1.0)
+        let expectedLeft = 0.9 * exploitationLeft + 0.05
+        assertArrayNear 1e-12 [| expectedLeft; 1.0 - expectedLeft |] (learner.Strategy("day") |> Array.map snd)
+        assertTrue "The issuing context must receive its first observation." (learner.Rounds("day") = 1L)
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (learner.Strategy("night") |> Array.map snd))
+
+    test "online/context-exact/exp3-rejects-foreign-choice-and-allows-retry" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let first: ExactContextBanditRegretMinimizer<string, int> =
+            ContextualExp3.createWith options 0.2 0.1 [| 0; 1 |]
+        let second: ExactContextBanditRegretMinimizer<string, int> =
+            ContextualExp3.createWith options 0.2 0.1 [| 0; 1 |]
+        let firstChoice = first.Choose("x")
+        let secondChoice = second.Choose("x")
+
+        assertThrows (fun () -> first.Choose("y") |> ignore)
+        assertThrows (fun () -> first.Learn(secondChoice, 1.0))
+        assertThrows (fun () -> first.Learn(firstChoice, Double.NaN))
+        first.Learn(firstChoice, 0.5)
+        assertTrue "Rejected data must leave the exact-context choice retriable." (first.Rounds("x") = 1L)
+        second.Learn(secondChoice, 0.0))
+
+    test "online/context-exact/exp3-failed-batch-round-is-cancelled" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let learner: ExactContextBanditRegretMinimizer<string, int> =
+            ContextualExp3.createWith options 0.2 0.1 [| 0; 1 |]
+
+        assertThrows (fun () ->
+            learner.LearnBatch
+                [ "a", (fun _ -> 1.0)
+                  "b", (fun _ -> -0.1) ])
+
+        assertTrue "Earlier contextual batch rounds must remain learned." (learner.Rounds("a") = 1L)
+        let recovery = learner.Choose("b")
+        learner.Learn(recovery, 0.0)
+        assertTrue "A failed local batch choice must not lock its context." (learner.Rounds("b") = 1L))
+
+    test "online/context-exact/constructors-validate-before-first-context" (fun () ->
+        assertThrows (fun () ->
+            ContextualMwua.create 0.0 [| 0; 1 |]
+            |> fun (_: ExactContextExternalRegretMinimizer<string, int>) -> ())
+
+        assertThrows (fun () ->
+            ContextualExp3.create 0.1 0.0 [| 0; 1 |]
+            |> fun (_: ExactContextBanditRegretMinimizer<string, int>) -> ()))
+
+    test "online/context-exact/constructor-inputs-are-owned-for-later-contexts" (fun () ->
+        let actions = [| "left"; "right" |]
+        let prior = [| 3.0; 1.0 |]
+        let options =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some prior }
+
+        let learner: ExactContextExternalRegretMinimizer<string, string> =
+            ContextualMwua.createWith options 0.2 actions
+
+        // The first eager learner and every later learner must use the same
+        // constructor-time snapshot, even if the caller mutates its arrays.
+        actions.[0] <- "changed"
+        prior.[0] <- 0.0
+        prior.[1] <- 1.0
+
+        learner.Strategy("first") |> ignore
+        let later = learner.Strategy("later")
+        assertTrue "Later contexts must retain the original action values." (later |> Array.map fst = [| "left"; "right" |])
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (later |> Array.map snd))
+
+    test "online/exp4/importance-weights-policy-advice-and-averages-pre-update" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let policies: ContextualPolicy<string, string>[] =
+            [| (fun _ -> "left")
+               (fun _ -> "right") |]
+
+        let learner = Exp4.createWith options 0.2 0.1 [| "left"; "right" |] policies
+        let choice = learner.Choose("weather")
+        assertTrue "The EXP4 choice must retain its context." (choice.Context = "weather")
+        assertTrue "The fixed draw must select left." (choice.Action = "left")
+        assertNear 0.0 0.5 choice.Probability
+        learner.Learn(choice, 1.0)
+
+        let expectedLeftPolicy = exp 0.4 / (exp 0.4 + 1.0)
+        assertArrayNear 1e-12 [| expectedLeftPolicy; 1.0 - expectedLeftPolicy |] (learner.PolicyStrategy |> Array.map snd)
+        assertArrayNear 0.0 [| 0.5; 0.5 |] (learner.AveragePolicyStrategy |> Array.map snd)
+
+        let expectedLeftAction = 0.9 * expectedLeftPolicy + 0.05
+        assertArrayNear 1e-12 [| expectedLeftAction; 1.0 - expectedLeftAction |] (learner.Strategy("weather") |> Array.map snd)
+        assertTrue "EXP4 must count one learned contextual round." (learner.Rounds = 1L))
+
+    test "online/exp4/aggregates-policies-that-recommend-the-same-action" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.6) }
+
+        let policies: ContextualPolicy<int, string>[] =
+            [| (fun _ -> "left")
+               (fun _ -> "left")
+               (fun _ -> "right") |]
+
+        let learner = Exp4.createWith options 0.1 0.3 [| "left"; "right" |] policies
+        let strategy = learner.Strategy(0) |> Array.map snd
+        let expectedLeft = 0.7 * (2.0 / 3.0) + 0.15
+        assertArrayNear 1e-12 [| expectedLeft; 1.0 - expectedLeft |] strategy
+
+        let choice = learner.Choose(0)
+        assertTrue "The aggregated policy mass must select left at this draw." (choice.Action = "left")
+        assertNear 1e-12 expectedLeft choice.Probability
+        learner.Learn(choice, 0.0))
+
+    test "online/exp4/policy-learning-generalizes-to-unseen-contexts" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.0) }
+
+        let policies: ContextualPolicy<bool, string>[] =
+            [| (fun context -> if context then "left" else "right")
+               (fun context -> if context then "right" else "left") |]
+
+        let learner = Exp4.createWith options 0.2 0.1 [| "left"; "right" |] policies
+
+        for _ = 1 to 100 do
+            let choice = learner.Choose(true)
+            learner.Learn(choice, if choice.Action = "left" then 1.0 else 0.0)
+
+        let unseenContextStrategy = learner.Strategy(false) |> Array.map snd
+        assertTrue
+            "Evidence for a policy must transfer through its recommendation at an unseen context."
+            (unseenContextStrategy.[1] > 0.949))
+
+    test "online/exp4/choice-token-validation-and-rejected-reward-are-atomic" (fun () ->
+        let options draw =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom draw) }
+
+        let policies: ContextualPolicy<int, int>[] = [| (fun _ -> 0); (fun _ -> 1) |]
+        let first = Exp4.createWith (options 0.25) 0.2 0.1 [| 0; 1 |] policies
+        let second = Exp4.createWith (options 0.75) 0.2 0.1 [| 0; 1 |] policies
+        let firstChoice = first.Choose(1)
+        let secondChoice = second.Choose(1)
+        let before = first.PolicyStrategy |> Array.map snd
+
+        assertThrows (fun () -> first.Choose(2) |> ignore)
+        assertThrows (fun () -> first.Learn(secondChoice, 1.0))
+        assertThrows (fun () -> first.Learn(firstChoice, Double.NaN))
+        assertArrayNear 0.0 before (first.PolicyStrategy |> Array.map snd)
+        assertTrue "Rejected EXP4 rewards must not advance the learner." (first.Rounds = 0L)
+        first.Learn(firstChoice, 0.5)
+        assertThrows (fun () -> first.Learn(firstChoice, 0.5))
+        second.Learn(secondChoice, 0.0))
+
+    test "online/exp4/learn-batch-matches-the-scalar-loop" (fun () ->
+        let options seed =
+            { ExternalRegretOptions.defaults with
+                Random = Some(Random seed) }
+
+        let policies: ContextualPolicy<int, int>[] =
+            [| (fun context -> context % 3)
+               (fun context -> (context + 1) % 3)
+               (fun _ -> 2) |]
+
+        let batch = Exp4.createWith (options 2468) 0.1 0.2 [| 0; 1; 2 |] policies
+        let scalar = Exp4.createWith (options 2468) 0.1 0.2 [| 0; 1; 2 |] policies
+
+        let feedback =
+            Array.init 250 (fun round ->
+                round,
+                (fun action ->
+                    if action = round % 3 then 1.0
+                    elif action = (round + 1) % 3 then 0.5
+                    else 0.0))
+
+        batch.LearnBatch feedback
+
+        for context, reward in feedback do
+            let choice = scalar.Choose context
+            scalar.Learn(choice, reward choice.Action)
+
+        assertArrayNear 0.0 (scalar.PolicyStrategy |> Array.map snd) (batch.PolicyStrategy |> Array.map snd)
+        assertArrayNear 0.0 (scalar.AveragePolicyStrategy |> Array.map snd) (batch.AveragePolicyStrategy |> Array.map snd)
+        assertTrue "EXP4 LearnBatch must advance once per contextual reward." (batch.Rounds = 250L))
+
+    test "online/exp4/failed-batch-round-is-cancelled" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                Random = Some(FixedRandom 0.25) }
+
+        let policies: ContextualPolicy<int, int>[] = [| (fun _ -> 0); (fun _ -> 1) |]
+        let learner = Exp4.createWith options 0.2 0.1 [| 0; 1 |] policies
+        assertThrows (fun () ->
+            learner.LearnBatch
+                [ 0, (fun _ -> 1.0)
+                  1, (fun _ -> -0.1) ])
+
+        assertTrue "Earlier successful EXP4 batch rounds must remain learned." (learner.Rounds = 1L)
+        let recovery = learner.Choose(2)
+        learner.Learn(recovery, 0.0)
+        assertTrue "A failed local EXP4 batch choice must not lock the learner." (learner.Rounds = 2L))
+
+    test "online/exp4/reset-restores-policy-prior-and-invalidates-choice" (fun () ->
+        let options =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some [| 3.0; 1.0 |]
+                Random = Some(FixedRandom 0.25) }
+
+        let policies: ContextualPolicy<int, int>[] = [| (fun _ -> 0); (fun _ -> 1) |]
+        let learner = Exp4.createWith options 0.2 0.2 [| 0; 1 |] policies
+        let stale = learner.Choose(0)
+        learner.Reset()
+
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (learner.PolicyStrategy |> Array.map snd)
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (learner.AveragePolicyStrategy |> Array.map snd)
+        assertTrue "Reset must clear EXP4 history." (learner.Rounds = 0L)
+        assertThrows (fun () -> learner.Learn(stale, 1.0)))
+
+    test "online/exp4/rejects-invalid-construction-and-policy-recommendations" (fun () ->
+        let policies: ContextualPolicy<int, int>[] = [| (fun _ -> 0) |]
+        assertThrows (fun () -> Exp4.create 0.0 0.1 [| 0 |] policies |> ignore)
+        assertThrows (fun () -> Exp4.create 0.1 0.0 [| 0 |] policies |> ignore)
+        assertThrows (fun () -> Exp4.create 0.1 0.1 [| 0; 0 |] policies |> ignore)
+        assertThrows (fun () -> Exp4.create 0.1 0.1 [| 0 |] [||] |> ignore)
+
+        let invalidPolicies: ContextualPolicy<int, int>[] = [| (fun _ -> 2) |]
+        let learner = Exp4.create 0.1 0.1 [| 0; 1 |] invalidPolicies
+        assertThrows (fun () -> learner.Choose(0) |> ignore)
+        assertTrue "A rejected policy recommendation must not start a round." (learner.Rounds = 0L))
+
+let evolutionaryDynamicsTests () =
+    let shares (population: Replicator.Population<'Strategy>) =
+        population.Shares
+
+    test "evolution/replicator/create-normalizes-and-owns-inputs" (fun () ->
+        let input = [| "go", 3.0; "stop", 1.0 |]
+        let population = Replicator.create input
+        input.[0] <- "changed", 0.0
+
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (shares population)
+        assertTrue
+            "Construction must retain its own strategy array."
+            (population.Strategies = [| "go"; "stop" |])
+
+        let exposedDistribution = population.Distribution
+        let exposedShares = population.Shares
+        exposedDistribution.[0] <- "changed", 1.0
+        exposedShares.[0] <- 0.0
+        assertArrayNear 0.0 [| 0.75; 0.25 |] (shares population))
+
+    test "evolution/replicator/derivative-matches-equation-and-common-shift" (fun () ->
+        let population = Replicator.create [| "a", 1.0; "b", 3.0 |]
+        let fitness _ strategy = if strategy = "a" then 3.0 else 1.0
+        let shiftedFitness population strategy = fitness population strategy + 100.0
+        let derivative = Replicator.derivative fitness population |> Array.map snd
+        let shifted = Replicator.derivative shiftedFitness population |> Array.map snd
+
+        assertArrayNear 1e-12 [| 0.375; -0.375 |] derivative
+        assertArrayNear 1e-12 derivative shifted
+        assertNear 1e-12 0.0 (Array.sum derivative))
+
+    test "evolution/replicator/exponential-step-matches-hand-calculation-and-shift" (fun () ->
+        let population = Replicator.create [| "a", 1.0; "b", 3.0 |]
+        let fitness _ strategy = if strategy = "a" then 3.0 else 1.0
+        let shiftedFitness population strategy = fitness population strategy - 37.0
+        let next = Replicator.step 0.5 fitness population
+        let shifted = Replicator.step 0.5 shiftedFitness population
+        let expectedA = (0.25 * exp 1.5) / (0.25 * exp 1.5 + 0.75 * exp 0.5)
+
+        assertArrayNear 1e-12 [| expectedA; 1.0 - expectedA |] (shares next)
+        assertArrayNear 1e-12 (shares next) (shares shifted)
+        assertArrayNear 0.0 [| 0.25; 0.75 |] (shares population))
+
+    test "evolution/replicator/step-is-one-shared-mwua-reweighting" (fun () ->
+        let actions = [| "a"; "b"; "c" |]
+        let initialShares = [| 2.0; 0.0; 3.0 |]
+        let scores strategy =
+            match strategy with
+            | "a" -> -2.0
+            | "b" -> 100.0
+            | _ -> 1.5
+
+        let options =
+            { ExternalRegretOptions.defaults with
+                InitialStrategy = Some initialShares }
+
+        let mwua = Mwua.createWith options 0.3 actions
+        let population =
+            Array.map2 (fun strategy share -> strategy, share) actions initialShares
+            |> Replicator.create
+
+        mwua.Learn scores
+        let next = Replicator.step 0.3 (fun _ strategy -> scores strategy) population
+
+        assertArrayNear 0.0 (mwua.Strategy |> Array.map snd) (shares next))
+
+    test "evolution/replicator/step-preserves-simplex-and-support" (fun () ->
+        let population =
+            Replicator.create [| "absent", 0.0; "fit", 1.0; "unfit", 1.0 |]
+
+        let fitness _ strategy =
+            match strategy with
+            | "absent" -> Double.MaxValue
+            | "fit" -> 0.0
+            | _ -> -Double.MaxValue
+
+        let derivative = Replicator.derivative fitness population |> Array.map snd
+        let next = Replicator.step 1.0 fitness population
+        let nextShares = shares next
+        assertNear 0.0 0.0 derivative.[0]
+        assertTrue "The supported derivative must remain finite." (derivative |> Array.forall Double.IsFinite)
+        assertNear 0.0 0.0 nextShares.[0]
+        assertTrue "Positive support must remain positive." (nextShares.[1] > 0.0 && nextShares.[2] > 0.0)
+        assertTrue "Every next share must be finite and nonnegative." (nextShares |> Array.forall (fun x -> Double.IsFinite x && x >= 0.0))
+        assertNear 1e-12 1.0 (Array.sum nextShares))
+
+    test "evolution/replicator/run-is-repeated-step" (fun () ->
+        let initial = Replicator.create [| 0, 0.4; 1, 0.6 |]
+        let fitness (population: Replicator.Population<int>) strategy =
+            if strategy = 0 then 2.0 * population.Share 1
+            else population.Share 0
+
+        let bulk = Replicator.run 500 0.01 fitness initial
+        let mutable scalar = initial
+
+        for _ = 1 to 500 do
+            scalar <- Replicator.step 0.01 fitness scalar
+
+        assertArrayNear 0.0 (shares scalar) (shares bulk))
+
+    test "evolution/replicator/approaches-go-stop-stable-mixture" (fun () ->
+        let initial = Replicator.create [| "go", 0.5; "stop", 0.5 |]
+
+        // In the extant game, Go earns -100 against Go and 1 against Stop;
+        // Stop always earns 0. The interior equilibrium has Go share 1/101.
+        let fitness (population: Replicator.Population<string>) strategy =
+            if strategy = "go" then 1.0 - 101.0 * population.Share "go"
+            else 0.0
+
+        let finalPopulation = Replicator.run 5_000 0.01 fitness initial
+        assertNear 1e-10 (1.0 / 101.0) (finalPopulation.Share "go"))
+
+    test "evolution/replicator/rejects-invalid-populations" (fun () ->
+        assertThrows (fun () -> Replicator.create (null: (int * float)[]) |> ignore)
+        assertThrows (fun () -> Replicator.create [||] |> ignore)
+        assertThrows (fun () -> Replicator.create [| 0, -1.0; 1, 2.0 |] |> ignore)
+        assertThrows (fun () -> Replicator.create [| 0, Double.NaN |] |> ignore)
+        assertThrows (fun () -> Replicator.create [| 0, Double.PositiveInfinity |] |> ignore)
+        assertThrows (fun () -> Replicator.create [| 0, 0.0; 1, 0.0 |] |> ignore)
+        assertThrows (fun () -> Replicator.create [| 0, 1.0; 0, 1.0 |] |> ignore))
+
+    test "evolution/replicator/rejects-invalid-step-and-fitness-atomically" (fun () ->
+        let population = Replicator.create [| 0, 0.5; 1, 0.5 |]
+        let before = shares population
+        let neutral _ _ = 0.0
+
+        assertThrows (fun () -> Replicator.step 0.0 neutral population |> ignore)
+        assertThrows (fun () -> Replicator.step -0.1 neutral population |> ignore)
+        assertThrows (fun () -> Replicator.step Double.NaN neutral population |> ignore)
+        assertThrows (fun () -> Replicator.run -1 0.1 neutral population |> ignore)
+        assertThrows (fun () -> Replicator.derivative (fun _ _ -> Double.NaN) population |> ignore)
+        assertThrows (fun () -> Replicator.step 0.1 (fun _ _ -> Double.NegativeInfinity) population |> ignore)
+        assertArrayNear 0.0 before (shares population))
+
 [<EntryPoint>]
 let main _ =
     helperTests ()
@@ -1488,5 +2174,7 @@ let main _ =
     sampledSolverTests ()
     multiplayerSolverTests ()
     productionApiTests ()
+    onlineLearningTests ()
+    evolutionaryDynamicsTests ()
     printfn "%d test(s) failed." failures
     if failures = 0 then 0 else 1

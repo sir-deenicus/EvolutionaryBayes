@@ -160,6 +160,12 @@ This is still a valid kernel as long as each repeated step is valid.
 
 ## Future improvements
 
+- Shared particle core and continuous-trait evolutionary dynamics
+  Extract normalization, ESS, resampling, mapping, and random-source handling
+  for reuse without changing the SMC target. A later particle
+  `ReplicatorMutator` will use biological mutation rather than automatically
+  applying MH target preservation. See
+  [`EvolutionaryDynamics.md`](../EvolutionaryDynamics.md) for the staged plan.
 - Multiple MH steps per annealing stage
   This is likely the biggest practical improvement for the current sampler. Repeating a valid mutation kernel several times after each reweight or resample stage usually reduces duplicate particles and improves local exploration more than small formula tweaks elsewhere.
 - Temperature-aware proposal scaling

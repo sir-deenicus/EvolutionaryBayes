@@ -136,9 +136,17 @@ Auditable runtime, memory, and allocation results are consolidated in
 
 
 
-In addition to bayesian methods, the library supports a multiplicative weights update algorithm—which are related to evolution—for regret minimization based learning. There can be experts per context, placing 
+In addition to Bayesian methods, the library provides full-information online
+learners for minimizing external regret. Exponential multiplicative weights and
+standalone regret matching share the same small API.
 
-```
+```fsharp
+open EvolutionaryBayes
+
+type Action =
+    | Go
+    | Stop
+
 let reward =
     function
     | (Go, Go) -> -100.
@@ -146,17 +154,140 @@ let reward =
     | (Stop, Go) -> 0.
     | (Stop, Stop) -> 0.
 
-let experts =
-    RegretLearner<int, _, _>(reward, [| Go; Stop |], minreward = -100., maxreward = 10.)
+let learner = Mwua.create 0.05 [| Go; Stop |]
+let action = learner.Choose()
 
-experts.New [ 0; 1 ] 
+// Full-information feedback: score every action against the observation.
+let observedOpponentAction = Stop
+learner.Learn(fun candidate -> reward (candidate, observedOpponentAction))
 
-for _ in 0 .. 999999 do
-    let action1 = experts.SampleActionOf(key = 0)
-    let action2 = experts.SampleActionOf(1)
+// A sequence is processed one round at a time in enumeration order.
+learner.LearnBatch
+    [ fun candidate -> reward (candidate, Go)
+      fun candidate -> reward (candidate, Stop) ]
 
-    experts.Learn(key = 0, observation = action1)
-    experts.Learn(1, action2)
+let currentStrategy = learner.Strategy
+let playedAverage = learner.AverageStrategy
+
+// Standard regret matching and the clipped plus variant have the same surface.
+let regretMatcher = RegretMatching.create [| Go; Stop |]
+let regretMatcherPlus = RegretMatching.createPlus [| Go; Stop |]
 
 ```
+
+When only the selected action's reward is observable, use EXP3 instead of the
+full-information learners. The environment step remains explicit and pure: it
+returns both its next state and the reward that is passed to `Learn`.
+
+```fsharp
+let banditStep target action =
+    let observedReward = if action = target then 1.0 else 0.0
+    let nextTarget = if target = Go then Stop else Go
+    nextTarget, observedReward
+
+let bandit = Exp3.create 0.05 0.1 [| Go; Stop |]
+let choice = bandit.Choose()
+let nextTarget, observedReward = banditStep Go choice.Action
+bandit.Learn(choice, observedReward)
+
+// Batch feedback is the same loop. Each function describes one reward round
+// and is evaluated only for the action sampled in that round.
+bandit.LearnBatch
+    [ fun action -> if action = Go then 1.0 else 0.0
+      fun action -> if action = Stop then 1.0 else 0.0 ]
+
+let currentBanditStrategy = bandit.Strategy
+let playedBanditAverage = bandit.AverageStrategy
+```
+
+EXP3 rewards must be finite values in `[0, 1]`. Its learning rate is the first
+numeric argument and its explicit exploration fraction is the second. A
+`BanditChoice` records the sampled action and probability; return it to the
+same learner exactly once before requesting another choice.
+
+For a small repeating set of contexts, exact-context variants keep one
+independent learner per context. Their constructors hide the per-context
+learner factory, and the first observation for a new context is learned rather
+than discarded.
+
+```fsharp
+type Situation =
+    | Quiet
+    | Busy
+
+let bySituation: ExactContextBanditRegretMinimizer<Situation, Action> =
+    ContextualExp3.create 0.05 0.1 [| Go; Stop |]
+
+let contextualChoice = bySituation.Choose(Quiet)
+let observedReward = if contextualChoice.Action = Go then 1.0 else 0.0
+bySituation.Learn(contextualChoice, observedReward)
+
+bySituation.LearnBatch
+    [ Quiet, (fun action -> if action = Go then 1.0 else 0.0)
+      Busy, (fun action -> if action = Stop then 1.0 else 0.0) ]
+```
+
+`ContextualMwua` and `ContextualRegretMatching` provide the same exact-context
+idea for full-information feedback. Exact-context tables memorize; they do not
+generalize between different contexts.
+
+For generalization, EXP4 learns a mixture over contextual policies. Evidence
+changes a policy's global weight, so its recommendations can transfer to
+contexts that have not yet appeared.
+
+```fsharp
+let policies: ContextualPolicy<Situation, Action>[] =
+    [| (fun situation -> if situation = Quiet then Go else Stop)
+       (fun situation -> if situation = Quiet then Stop else Go)
+       (fun _ -> Stop) |]
+
+let contextualBandit =
+    Exp4.create 0.05 0.1 [| Go; Stop |] policies
+
+let policyChoice = contextualBandit.Choose(Quiet)
+let observedReward = if policyChoice.Action = Go then 1.0 else 0.0
+contextualBandit.Learn(policyChoice, observedReward)
+
+let actionDistribution = contextualBandit.Strategy(Busy)
+let currentPolicyMixture = contextualBandit.PolicyStrategy
+let playedPolicyAverage = contextualBandit.AveragePolicyStrategy
+```
+
+EXP4 policies must return one of the configured distinct actions. As with
+EXP3, rewards are finite values in `[0, 1]`, and each opaque contextual choice
+must be learned exactly once before another choice is requested.
+
+# Evolutionary Dynamics
+
+`Replicator` evolves a normalized finite population under population-dependent
+fitness. It is a pure evolutionary API: there is no sampled action, learning
+token, or average strategy.
+
+```fsharp
+let fitness (population: Replicator.Population<Action>) action =
+    let goShare = population.Share Go
+
+    match action with
+    | Go -> -100.0 * goShare + (1.0 - goShare)
+    | Stop -> 0.0
+
+let initialPopulation = Replicator.create [| Go, 0.5; Stop, 0.5 |]
+
+// A continuous-time diagnostic; step and run do not consume this value.
+let instantaneousChange = Replicator.derivative fitness initialPopulation
+let nextPopulation = Replicator.step 0.01 fitness initialPopulation
+
+// Equivalent to applying the same step sequentially 5,000 times.
+let evolvedPopulation =
+    Replicator.run 5_000 0.01 fitness initialPopulation
+
+let finalDistribution = evolvedPopulation.Distribution
+```
+
+Input masses are normalized. Strategy names must be distinct, shares must be
+finite and nonnegative with positive total mass, time steps must be finite and
+positive, and fitness must be finite. The exponential step preserves the
+simplex and keeps zero-share strategies absent. It uses the same internal
+max-shifted exponential reweighting primitive as MWUA, while retaining a pure
+population API rather than MWUA's mutable learning and averaging state.
 

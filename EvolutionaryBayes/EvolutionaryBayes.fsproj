@@ -10,7 +10,11 @@
     <Compile Include="AssemblyInfo.fs" />
     <None Include="evosim.fsx" />
     <None Include="minregret.fsx" />
+    <None Include="replicator.fsx" />
     <Compile Include="RegretMinimization.fs" />
+    <Compile Include="MWUA.fs" />
+    <Compile Include="ContextualRegret.fs" />
+    <Compile Include="Replicator.fs" />
     <None Include="NotesOnPriors.fsx" /> 
     <Compile Include="Distributions.fs" />
     <Compile Include="Helpers.fs" />
