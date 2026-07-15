@@ -32,98 +32,374 @@ Con: For both, flexibility comes with a steep price: inference can be quite cost
 
 EvoBayes starting point is the observation that most Bayesian approaches tend to blow up on needed computational resources, are (one or more of) slow, heavy or with a cumbersome interface. Meanwhile, simulated annealing, which is not so different from Metropolis Hastings, is surprisingly fast and scales to quite hostile combinatorial spaces. A similar observation can be made about the ease of use of evolutionary or genetic algorithm packages, which are commonly deployed while also maintaining a population (their flexibility being of interest more so than their optimality). This caused me to consider a method combining all these approaches. 
 
-EvoBayes is a a light-weight dsl for composing fast samplers and determining likelihoods.  It is a bit less principled/more forgiving from a bayesian perspective than all the methods mentioned above.
+EvoBayes is a lightweight F# toolkit for sampling and scoring distributions,
+then using them with transition-based inference. Its smallest common
+abstraction is `Distribution<'T>`: a value that can both produce a sample and
+evaluate the log likelihood of a value. The library supplies common scalar and
+discrete distributions such as normal, beta, Bernoulli, categorical, and
+Poisson distributions.
 
-```F#
-    let game2 a b c d =
-        dist {
-            let! p = beta a b
-            let! q = beta c d
-            let! p1res = bernoulliChoice "P1 win" "P2 win" p
-            let! p2res = bernoulliChoice "P2 win" "P1 win" q
-            if p1res = p2res then return p1res
-            else 
-                let tiebreak =
-                    if p > q then "P1 win"
-                    elif p = q then "can't say"
-                    else "P2 win"
-                return tiebreak
-        }
-    
-    (game2 6. 10. 2. 10.).SampleN(1_000_000)
-    |> Sampling.roundAndGroupSamplesWith id
-    |> Array.sortByDescending snd
+For example, the same beta prior can generate a simulation and score a
+candidate value:
+
+```fsharp
+open EvolutionaryBayes.Distributions
+open EvolutionaryBayes.Extras
+
+let winRatePrior = beta 6. 10.
+let simulatedRates = winRatePrior.SampleN(100_000)
+let logDensityAtHalf = winRatePrior.LogLikelihood 0.5
 ```
-EvoBayes supports F# computation expressions, and while you can do simple sampling based probabilistic programming with it, its core purpose is as a DSL for sequencing statements while allowing for easy nesting and composition of samplers. *Note*: Although recursion is supported, it can blow the stack  (after around a few thousand iterations) as this is not a discrete probability monad meant to build lazy search trees. Recursive structures are best built by mutations in (MCMC, particle filter) sampler iterations.  
 
-These types of priors are generators and should be thought of as a way to encode your beliefs about a good place to start searching. 
+The compiled library intentionally has no general-purpose model computation
+expression. Models are ordinary typed F# functions, while inference algorithms
+remain explicit about the additional pieces they need—a complete log target
+for MCMC, or a prior, non-negative scorer, and valid move kernel for particle
+methods. This separation keeps trees, graphs, variable-size values, and other
+domain-specific state available without requiring a model compiler.
 
-I believe a good part of the potential of computers as tools for thought is in the ability to create declarative domain languages. Procedural thinking—which surprisingly, when viewed in a certain way, includes mathematics where you really need to understand the ins and outs of a problem—places more pressure on correctly working out all the steps of the problem.
-
-For example, in math we must carefully write out the probabilities, carry out long calculations, remembering what terms to sum. We must carefully work out say, a probability tree on paper or a whiteboard. Whereas here, we use our declarative syntax to write out our problem in a manner close to language. This specification can then either be executed as a random sampling simulation or as a mathematical expression or as a probability tree.  With a DSL, we describe the problem in a way that allows us to think close to natively in the language of the problem.
+The library is deliberately permissive about state representations, but not
+every use of that flexibility is equally Bayesian. Correctness depends on the
+contract of the selected algorithm: Hastings proposals must include the right
+forward/reverse correction, and resample–move particle mutations must preserve
+the current annealed target. Supplying an arbitrary search mutation is still
+useful, but then the result should be treated as heuristic optimization rather
+than posterior inference.
 
 ## Metropolis Hastings
 
-EvoBayes is focused on the likelihood and the concept of perturbations. It supports a perturbation or transition operator that behaves much as what one would find in simulated annealing. In its Metropolis Hastings implementation, it is necessary to provide a prior to go with the transition operators and likelihood computations.
+`MCMC<'Data,'State>` runs a stateful Metropolis–Hastings chain against an
+explicit log target. It supports symmetric and asymmetric proposals, optional
+annealing, burn-in, thinning, continuation across calls, and acceptance
+diagnostics. When annealing starts above temperature 1, warm-up states are
+recorded in the trajectory but only temperature-1 states enter the posterior
+sample collection.
 
-Ultimately, constructing a prior that can also compute likelihoods with computation expressions is probably not the best way to go (given the intended use cases), also likely requiring the use of symbols and some effort adjusting the distributions to accept them. But that's not all since getting something that can be both sampled from and computes likelihoods seems very tricky--there seems no obvious way to apply the needed arbitrary projection to the intermediate tensor products.
+Here is a complete one-parameter posterior. The proposal helper returns a
+proper `Proposal<float>` and is temperature-aware when annealing is enabled:
 
-It is much easier instead to implement a way for base distributions to compute likelihoods and then manually compute the prior and the sum for the likelihood. With included helpers it should not take much more work than doing so with computation expressions.
+```fsharp
+open EvolutionaryBayes
+open EvolutionaryBayes.Distributions
+open EvolutionaryBayes.MutationKernels
+
+let observations = [| 5.; 10.; 4. |]
+
+let logTarget mean =
+    (normal 0. 10.).LogLikelihood mean
+    + (observations
+       |> Array.sumBy (fun y -> (normal mean 1.).LogLikelihood y))
+
+let chain =
+    MCMC<unit, float>(
+        ProposalKernels.gaussianRandomWalk 0.5,
+        (fun _ mean -> logTarget mean),
+        0.,
+        nsamples = 5_000,
+        burnin = 1_000,
+        thin = 5)
+
+let posteriorSamples = chain.RunChain()
+let diagnostics = chain.Diagnostics
+```
+
+The log target includes both the prior and observation terms. Keeping that
+function explicit makes it clear what density the chain targets and avoids
+confusing a convenient prior generator with the full posterior.
 
 ## Particle Filter
 
-In addition to the MCMC/simulated annealing hybrid, the Particle Filter section is inspired by genetic algorithms, actual evolution and particle filters. The issue of priors is here not large and the generator based priors do act more typically bayesian.
+`ParticleFilters.PopulationSampler` implements annealed resample–move
+sequential Monte Carlo for a static target. It draws particles from a prior,
+increments the influence of a non-negative likelihood or score as temperature
+falls toward 1, resamples when effective sample size is low, and rejuvenates
+particles with a target-preserving mutation kernel.
 
-*Quoting a code comment:*
+```fsharp
+open System
+open EvolutionaryBayes.Distributions
+open EvolutionaryBayes.Extras
+open EvolutionaryBayes.MutationKernels
+open EvolutionaryBayes.ParticleFilters
 
-> Inspired by evolution (see papers on regret minimization's connection to evolution), this method maintains a memory where each element is a set of samples weighted by their average performance. The head of this list is the most recent generation. Worst performing generations are evicted when memory size limit is reached. Hopefully, by then their descendants can be found in later generations. At each step, a generation is sampled and then a member of that generation. Because the memory size is bounded there is a fixed upper bound on total samples with the population mixing and hopefully drifting towards the most fit.
->
+let prior = normal 0. 10.
+let observations = [| 5.; 10.; 4. |]
 
-The most useful aspect of this approach is it allows any method that generates samples to be capable of incremental online learning that resists catastrophic forgetting from drift.
+let likelihood mean =
+    observations
+    |> Array.sumBy (fun y -> (normal mean 1.).LogLikelihood y)
+    |> exp
+
+let sampler =
+    PopulationSampler(
+        prior,
+        likelihood,
+        Standard.gaussianRandomWalk 0.35,
+        temperature = 8.,
+        attenuate = 0.85)
+
+let posterior =
+    sampler.RecursiveMonteCarloSamples(
+        samplespergen = 1_000,
+        generations = 30)
+
+let summary =
+    posterior.SampleAndGroup(2_000, fun x -> Math.Round(x, 1))
+```
+
+`RecursiveMonteCarloSamples` is the direct resample–move variant.
+`EvolveSequence` uses a bounded archive of earlier particle approximations as
+additional proposal support, with a Metropolis–Hastings correction; the archive
+helps proposals cross difficult spaces but does not give old generations
+posterior mass. See [Mutation kernels](EvolutionaryBayes/MutationKernels.md)
+for the exact move-kernel contract and archive details.
 
 ## Transitions/Perturbations/Mutations:
 
-Transitions and perturbations are a key idea in EvoBayes. Consider the following example where one of the weights are randomly perturbed.
-```F#
-    (fun (m, b) ->
-        let ps = [| m; b |]
-        let i = random.Next(0, ps.Length)
-        ps.[i] <- ps.[i] + random.NextDouble(-0.1, 0.1)
-        ps.[0], ps.[1])
-```
-As I mentioned before, this aspect is not too dissimilar to simulated annealing. The advantage now is a nice DSL and a maintained population to capture uncertainty. Here we’re sampling one directional change at a time, but while it is possible to perturb all dimensions at once, I have noticed that this makes sampling less effective across all dimensions. In the above, a random uniform is added to the present state. This can also be seen as conditioning on a uniform, but we can use arbitrary distributions for exploration, which eases tuning variance or constraining what values the parameters will take. This is particularly useful for more complex matrix and vector distributions.
+Transitions are explicit because the library is intended to work with more
+than Euclidean parameter vectors. A proposal may alter one coordinate, replace
+a subtree, rewire a graph, or regenerate part of a symbolic object. The move
+must nevertheless match the inference algorithm's contract.
 
+For ordinary numeric spaces, start with the supplied kernels:
+
+```fsharp
+let scalarMove = Standard.gaussianRandomWalk 0.25
+let vectorMove = Standard.gaussianCoordinateWalk 0.15
 ```
-(fun (m, b) ->
-    let ps = [| m; b |]
-    let i = random.Next(0, ps.Length)
-    ps.[i] <- Normal(ps.[i], 1.).Sample()
-    ps.[0], ps.[1])
+
+Both particle kernels apply Metropolis correction against the annealed target.
+For an asymmetric move, provide its forward and reverse log proposal densities
+instead of pretending it is symmetric. For example, this log-normal random
+walk stays in the positive reals:
+
+```fsharp
+open MathNet.Numerics.Distributions
+open EvolutionaryBayes.MutationKernels
+
+let positiveMove =
+    Metropolis.fromProposal (fun _ x ->
+        let forward = LogNormal(log x, 0.2)
+        let proposed = forward.Sample()
+        let reverse = LogNormal(log proposed, 0.2)
+
+        { Value = proposed
+          LogForward = forward.DensityLn proposed
+          LogReverse = reverse.DensityLn x })
 ```
+
+The same accounting applies to structural edits: include the probability of
+choosing the edit kind, location, and replacement in both directions. If a
+move truly is symmetric, `Metropolis.symmetric` is the concise particle form;
+`Proposal.symmetric` and `ProposalKernels` provide the corresponding MCMC
+proposal forms.
 
 # Limitations
 
-This library is meant to be a more flexible and robust alternative to simulated annealing and genetic programming with a bayesian derived approach. If you need to properly explore high dimensional spaces and aren’t doing anything crazy like interactively sampling recursively built symbolic expressions, then you are better off using a HMC package. If Control flow on discrete structures and recursive search is paramount then consider Hansei. Finally, for large complex models that are more powerful than graphical models but still not fully recursive, consider Infer.net.
+EvoBayes is a small inference toolkit, not a complete probabilistic-programming
+compiler. In particular:
 
-However, one area where this library can be useful is doing lightweight probabilistic programming on lower end devices. For example, this library is fully compatible with Android devices.
+- it does not derive a posterior, proposal ratio, or mutation correction from
+  an arbitrary generative function;
+- it does not provide automatic differentiation, HMC/NUTS, variational
+  inference, or the diagnostics of a mature dedicated inference system;
+- MCMC and particle methods can still mix poorly in high-dimensional or
+  strongly multimodal targets, and a population does not by itself solve that;
+- recursive model and sampler functions execute as ordinary calls and can
+  exhaust the stack—they are not lazily explored probability trees; and
+- arbitrary mutations are permitted for search experiments, but they cease to
+  define exact posterior inference unless they preserve the stated target.
+
+For example, use a mature HMC system for a large smooth differentiable model,
+Hansei-style search when exact discrete control flow is central, and Infer.NET
+when the problem fits its scalable graphical-model family. EvoBayes is most at
+home when the state or move is domain-specific and you want a compact F# API
+for simulation, MCMC, annealing, or particle inference without hiding those
+algorithmic choices.
 
 # Regret Learning
 
-For the repository's CFR/MCCFR solver, including finite sequential
-$N$-player general-sum games, explicit chance nodes, and the optimized
-two-player path, see [Counterfactual Regret Minimization](CFR.md).
+EvoBayes is organized around one recurring operation: differential growth of
+mass over a set of alternatives. Given a current distribution $x_t$ and a
+non-negative growth factor $g_t$ with positive total mass, the common update is
 
-The production surface exposes four explicit modes: `CFR`, `CFRPlus`,
-`MCCFR`, and `MCCFRPlus`. `Solver.create` returns an opaque solver that owns
-iteration numbering, packed regret and mandatory average-strategy tables,
-convergence checks, and reusable traversal workspace. Games provide dense
-local legal actions through `IGame<'State>`; no dictionary keys, strings, or
-Boolean action masks enter the solver hot path.
+$$
+x_{t+1}(i)
+=\frac{x_t(i)g_t(i)}{\sum_j x_t(j)g_t(j)}.
+$$
 
-The smallest complete adapter is
-[`hidden-matching-pennies.fsx`](EvolutionaryBayes.CFR.Tests/games/hidden-matching-pennies.fsx).
-Kuhn poker and Mini Dudo in the same directory demonstrate explicit chance,
-exact average-profile evaluation, and tolerance-driven training.
+The surrounding domain determines how that growth factor is obtained. For a
+Bayesian hypothesis it is a likelihood $L_t(i)$. For an MWUA action it is
+$\exp(\eta r_t(i))$. For an evolutionary strategy over a finite time step it is
+$\exp(\Delta t\,f_i(x_t))$. In every case, alternatives with greater relative
+evidence, payoff, or reproductive success acquire a greater share of the next
+distribution. The interpretations add domain meaning and constraints, but the
+selection geometry underneath them is the same.
+
+The MWUA–Bayes connection is therefore exact under a change of coordinates,
+not merely an implementation analogy. Setting
+
+$$
+r_t(i)=\frac{1}{\eta}\log L_t(i)
+$$
+
+makes the MWUA update identical to sequential Bayesian updating. Conversely,
+exponentiated reward acts mathematically as a likelihood factor. Whether that
+factor represents observed evidence, decision utility, or another measure of
+success is a modeling interpretation layered over the same normalized
+multiplicative process.
+
+The same identity gives the evolutionary connection. The finite replicator
+step implemented in this library is
+
+$$
+x_i(t+\Delta t) \propto x_i(t)\exp(\Delta t\,f_i(x(t))),
+$$
+
+which is MWUA with population-dependent fitness as its growth rate.
+`Replicator.step` and MWUA consequently use the same stable exponential
+reweighting kernel. Their APIs reflect different views of the process: online
+learning exposes a `Choose`/`Learn` interaction and an average played strategy;
+evolution exposes the current population and its continuous-time derivative.
+
+The current replicator module has continuous population shares over a finite
+strategy set. The planned continuous-trait extension will represent numeric or
+structured traits with particles. It will reuse a shared particle core for
+normalization, effective sample size, resampling, mutation scheduling, and
+diagnostics, while remaining a separate consumer from Bayesian SMC: selection
+will reweight by fitness, and biological mutation will intentionally change the
+population instead of applying Metropolis–Hastings correction to preserve a
+posterior. See [Evolutionary dynamics](EvolutionaryDynamics.md) for that staged
+`ReplicatorMutator` plan.
+
+Bandit and regret algorithms cover the decision-learning branch. EXP3 adds
+importance-weighted feedback when only the chosen action is observed, while
+regret matching learns from how every action would have performed relative to
+the current mixture.
+
+CFR is the tree-shaped extension of that last idea. A flat regret matcher learns
+one distribution over actions. CFR places a local regret matcher at every
+information set, then uses counterfactual reach probabilities to assign credit
+through a sequential, partially observed game. It therefore turns a global
+strategy problem into a collection of coupled local online-learning problems.
+
+## Counterfactual Regret Minimization
+
+CFR minimizes regret separately at every information set in a finite
+extensive-form game. Unlike ordinary regret matching, it traverses a game tree
+and weights each local update by the probability that the other players and
+chance reach that decision. The average of the learned local strategies is the
+policy used for play. In two-player zero-sum games with perfect recall, those
+average strategies approach a Nash equilibrium; in multiplayer or general-sum
+games, the solver still minimizes counterfactual regret, but that statement no
+longer implies convergence to a Nash profile.
+
+The most important part of a game adapter is `InformationSetId`. States receive
+the same ID exactly when the acting player cannot distinguish them. Hidden
+matching pennies is the smallest useful example: player 1 acts after player 0,
+but cannot observe player 0's choice, so both underlying player-1 states share
+information-set ID 1.
+
+```fsharp
+open EvolutionaryBayes.CFRCore
+
+type State =
+    | Player0Turn
+    | Player1Turn of hiddenPlayer0Action: int
+    | Terminal of player0Action: int * player1Action: int
+
+let game =
+    { new IGame<State> with
+        member _.TerminalUtility(state, targetPlayer) =
+            match state with
+            | Terminal(player0Action, player1Action) ->
+                let utility0 =
+                    if player0Action = player1Action then 1. else -1.
+
+                ValueSome(if targetPlayer = 0 then utility0 else -utility0)
+            | _ -> ValueNone
+
+        member _.Actor state =
+            match state with
+            | Player0Turn -> 0
+            | Player1Turn _ -> 1
+            | Terminal _ -> invalidOp "Terminal state"
+
+        member _.InformationSetId state =
+            match state with
+            | Player0Turn -> 0
+            | Player1Turn _ -> 1 // Player 0's action is hidden here.
+            | Terminal _ -> invalidOp "Terminal state"
+
+        member _.ActionCount state =
+            match state with
+            | Player0Turn | Player1Turn _ -> 2 // 0 = Heads, 1 = Tails
+            | Terminal _ -> invalidOp "Terminal state"
+
+        member _.NextState(state, action) =
+            match state with
+            | Player0Turn -> Player1Turn action
+            | Player1Turn player0Action -> Terminal(player0Action, action)
+            | Terminal _ -> invalidOp "Terminal state"
+
+        member _.ChanceProbability(_state, _action) =
+            invalidOp "This game has no chance nodes" }
+
+let informationSets =
+    [| { Id = 0; Owner = 0; ActionCount = 2 }
+       { Id = 1; Owner = 1; ActionCount = 2 } |]
+
+let solver =
+    Solver.create
+        SolverMode.CFRPlus
+        2
+        game
+        informationSets
+        2       // maximum nonterminal depth
+        2       // maximum local action count
+        1729    // seed, used by sampled modes
+
+let training = Solver.run solver 10_000 100 Player0Turn
+let player0Policy = Solver.averageStrategy solver 0
+let player1Policy = Solver.averageStrategy solver 1
+```
+
+Both policies approach `[| 0.5; 0.5 |]`. The `100` passed to `Solver.run` is
+average-strategy burn-in: regret learning still occurs, but the first 100
+iterations do not contribute to the returned playing policy. Repeated calls
+continue the same solver; it owns iteration numbering so CFR+ linear averaging
+cannot accidentally repeat or skip an iteration.
+
+The four modes make traversal and update semantics explicit:
+
+| Mode | Tree traversal | Regret update | Average weighting | Typical use |
+| --- | --- | --- | --- | --- |
+| `CFR` | exhaustive | signed | uniform | deterministic baseline and small trees |
+| `CFRPlus` | exhaustive | clipped at zero | linear | faster practical convergence when exhaustive traversal fits |
+| `MCCFR` | external sampling | signed | uniform | larger trees where full traversal is too costly |
+| `MCCFRPlus` | external sampling | clipped at zero | linear | sampled CFR+ experiments; validate under sampling variance |
+
+Actions are dense local indices `0 .. ActionCount(state) - 1`; illegal global
+actions and Boolean masks never enter the traversal. `Actor` may return any
+player, allowing consecutive or skipped turns. For an explicit chance node it
+returns `ChanceActor`, while `ChanceProbability` supplies a normalized
+distribution over that node's local actions. General-sum games return the
+requested player's own payoff from `TerminalUtility` rather than relying on
+two-player negation.
+
+`Solver.create` returns an opaque solver that owns packed regret and mandatory
+average-strategy tables plus reusable traversal workspace. `Solver.run` trains
+for a fixed additional budget; `Solver.runUntil` uses a caller-defined error
+measure; `Solver.evaluateAverage` exactly evaluates the current average profile;
+and `Solver.averageStrategy` returns one normalized information-set row.
+
+See [Counterfactual Regret Minimization](CFR.md) for the mathematical audit,
+memory model, implementation history, and complete production API. The
+runnable
+[`hidden-matching-pennies.fsx`](EvolutionaryBayes.CFR.Tests/games/hidden-matching-pennies.fsx)
+expands the example above. Kuhn poker and Mini Dudo in the same directory
+demonstrate explicit chance, exact average-profile evaluation, and
+tolerance-driven training.
 
 ```powershell
 dotnet build EvolutionaryBayes.sln -c Release -v:minimal
@@ -134,11 +410,11 @@ dotnet run --project EvolutionaryBayes.CFR.Benchmarks -c Release -- --revision <
 Auditable runtime, memory, and allocation results are consolidated in
 [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
+## Flat and contextual regret minimization
 
-
-In addition to Bayesian methods, the library provides full-information online
-learners for minimizing external regret. Exponential multiplicative weights and
-standalone regret matching share the same small API.
+For repeated decisions without a game tree, the library provides
+full-information online learners for minimizing external regret. Exponential
+multiplicative weights and standalone regret matching share the same small API.
 
 ```fsharp
 open EvolutionaryBayes
