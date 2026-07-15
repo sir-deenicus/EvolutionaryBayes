@@ -714,14 +714,13 @@ stage requires an unfinished public mode to remain exposed.
 | 4 | Sampled two-player solver - completed 2026-07-13 | `MCCFR` and `MCCFRPlus` share the packed tables and scalar kernels with exhaustive modes; all four modes are exposed through one public `Solver`. |
 | 5 | $N$-player and chance completion - completed 2026-07-13 | Every mode supports finite sequential $N$-player general-sum games and explicit chance nodes while retaining the selected two-player path. |
 | 6 | Production cutover - completed 2026-07-14 | The legacy recursive implementation is removed from production, the minimal opaque API is frozen, and memory, allocation, convergence, and migration checks pass. |
-| 7 | Profile-guided single-thread optimization | Small-action scalar fast paths and, only where profitable, isolated SIMD kernels improve measured throughput without changing the design. |
+| 7 | Profile-guided single-thread optimization - completed 2026-07-14 | Checked traversal and the compact generic scalar kernels remain production: every small-action, loop, bounds-check, trusted-path, and SIMD candidate failed the end-to-end merge gate and was removed. |
 | 8 | Optional deterministic parallel batches | Parallel MCCFR is added only if representative workloads justify its complexity and it passes reproducibility and memory gates. |
 
-Stages 1 through 6 are complete and define the required production core.
-Stage 7 may legitimately
-end with scalar code if SIMD does not win. Stage 8 may legitimately end with a
-documented no-go result; parallel execution is not required to consider the
-core complete.
+Stages 1 through 7 are complete and define the required production core.
+Stage 7 ended with scalar code because no candidate cleared its measured gate.
+Stage 8 may legitimately end with a documented no-go result; parallel
+execution is not required to consider the core complete.
 
 ### Final production API
 
@@ -1705,14 +1704,15 @@ and improves median elapsed time on the representative workload. Fused clearing
 matches its scalar reference and did not regress median throughput. The
 unchecked touching path did not beat the checked path and was removed.
 
-**Recorded later optimizations.** Repeated dynamic game-contract validation is
-not removed in Stage 3a because doing so changes failure behavior. Stage 7 must
-measure actor, action-count, information-set ownership/length, terminal, and
-chance-normalization checks before considering one construction-time selection
-between checked and trusted traversal. The hot loop must not branch on that
-selection, the checked path must remain available, and the trusted path is kept
-only if its end-to-end benefit clears the Stage 7 merge gate. Small-action
-unrolling, generic-loop tuning, and SIMD also remain explicitly in Stage 7.
+**Recorded later optimization result.** Stage 7 measured a separate trusted
+two-player traversal that removed repeated depth, actor, action-count,
+information-set, metadata, probability, and chance-normalization checks without
+adding a per-node selection branch. Its paired medians were 1.7% to 6.2% slower,
+so it was removed and checked failure behavior remains the only production
+path. Small-action unrolling, generic-loop tuning, Span-based bounds-check
+experiments, and isolated SIMD similarly failed the end-to-end merge gate and
+were removed. Complete results are in
+[`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
 #### Stage 4: add two-player MCCFR and MCCFR+ - completed 2026-07-13
 
@@ -1938,59 +1938,55 @@ production assembly, the public API and documentation agree, correctness and
 allocation gates pass, and callers can train and retrieve an average strategy
 in every mode without knowing the internal table representation.
 
-#### Stage 7: apply profile-guided single-thread optimization
+#### Stage 7: apply profile-guided single-thread optimization - completed 2026-07-14
 
-**Milestone outcome.** The scalar production solver is tuned for the workloads
-that actually matter. SIMD is an implementation detail of isolated kernels, not
-a second architecture. A well-supported decision to keep scalar code also
-completes this milestone.
+**Milestone outcome.** Profiling supported the compact checked scalar solver,
+not another production specialization. The Stage 1 matrix was rerun in
+Release, the final public modes and scalar row kernels were measured, JIT code
+was inspected, and candidates were evaluated by paired end-to-end medians.
+Every candidate failed the existing $10\%$ improvement / $3\%$ common-workload
+regression gate and was removed. This is the planned valid scalar completion of
+the milestone. A 2026-07-15 confirmation run then reconsidered the clipped-row
+SIMD candidate under a lower practical $5\%$ gate and heavier drift-controlled
+sampling; it also failed to establish a stable end-to-end win.
 
-**Implementation work.**
+**Measured decisions.**
 
-1. Re-run the Stage 1 benchmark matrix in Release mode and profile inclusive
-   time, branch behavior, and allocation before changing code. Rank hotspots by
-   total solver time, not by microbenchmark attractiveness.
-2. Optimize in this order:
+1. The baseline stable regret matcher compiled to a 302-byte scalar body.
+   Explicit two- and three-action bodies plus dispatch were no smaller overall;
+   one three-action form expanded to 597 bytes through generic `max`. The
+   corrected candidate ranged from an 11.4% win to a 21.5% regression across
+   common CFR/CFR+ workloads, so no action-count dispatch remains.
+2. Span rows did not eliminate element checks and expanded the regret matcher
+   to 382 bytes. Computing the reciprocal of the scaled total once was simpler
+   arithmetically but ranged from a 4.9% win to a 12.3% regression. Both generic
+   loop candidates were removed.
+3. `Vector<double>` apply/clip/clear was 69.8% to 87.7% faster in its isolated
+   AVX microbenchmark, but only $-7.5\%$ to $+2.5\%$ end to end on 8--32 action
+   games. The SIMD code was removed because tree traversal and other row work
+   dominate the representative solver workloads. The later confirmation used
+   longer 11-pair runs followed by five ABBA blocks. Drift-corrected median
+   changes were $-0.18\%$, $-3.18\%$, and $+0.59\%$ at 8, 16, and 32 actions,
+   respectively, where negative is faster. No possible action-count threshold
+   met the revised $5\%$ gate, so the no-SIMD decision remains measured rather
+   than merely conservative.
+4. A temporary separate trusted CFR recursion removed the repeated game
+   contract checks without adding a selection branch inside the hot loop. It
+   was 1.7% to 6.2% slower in paired medians, so validation remains enabled and
+   no trusted API or duplicate traversal was added.
+5. `double` remains the only numeric representation. No persistent or workspace
+   array changed. The benchmark executable retains only the compact
+   `--stage7-sample` operation for future one-shot production profiles.
 
-   - measure repeated game-contract validation; only if material, consider a
-     checked/trusted traversal selected once outside the hot loop, with checked
-     behavior retained for untrusted games;
-   - remove remaining bounds checks and non-inlined helper overhead where the
-     generated code demonstrates a cost;
-   - add explicit two-action and three-action scalar kernels if they improve the
-     primary games;
-   - tune the generic scalar loop;
-   - consider SIMD only for rows large enough to amortize vector setup,
-     horizontal reduction, and the scalar tail.
-
-3. Limit `System.Numerics.Vector<double>` or hardware intrinsics to regret
-   application, clipping, strategy accumulation, or positive-regret scans over
-   contiguous rows. Do not vectorize recursive control flow or restructure the
-   game into an ECS, tree batch, or graph engine.
-4. Select a kernel by action count inside the isolated row operation. Do not add
-   four SIMD traversals or a strategy-object dispatch at each node.
-5. Use a merge gate: a specialization must improve median throughput by at
-   least $10\%$ on a representative affected workload and must not regress the
-   common two- and three-action workloads by more than $3\%$. Record variance
-   and generated-code evidence with the result.
-6. Retain `double`. A `float32` specialization is a separate future proposal
-   requiring convergence and exploitability evidence; it is not part of this
-   stage.
-
-**Verification.**
-
-- Every optimized kernel is compared with the scalar reference over randomized
-  rows, including non-vector-width tails and extreme finite values.
-- Floating-point reordering is accepted only within a documented tolerance and
-  does not measurably degrade convergence on the analytical fixtures.
-- End-to-end nodes per second, not only kernel operations per second, clears the
-  merge gate.
-- Steady-state allocation remains zero and persistent memory remains unchanged.
-
-**Exit criteria.** The benchmark report identifies every retained
-specialization and its measured benefit. Unprofitable SIMD code is removed.
-The remaining implementation stays short enough to compare directly with the
-scalar CFR equations.
+**Verification and exit result.** The final `CFRCore.fs` is unchanged from the
+Stage 6 revision. The complete Release solution built for `net5.0`,
+`netstandard2.1`, and the .NET 8 executables with zero warnings; all 77 tests
+passed. All four public modes remained allocation-free after warm-up. Exact
+payload on the 341-information-set fixture remains 41,240 bytes for exhaustive
+and 32,248 bytes for sampled solvers. The consolidated report records source
+qualification, environment, node counts, medians, variance ranges, generated-
+code sizes, allocation, memory, and every removed candidate:
+[`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
 
 #### Stage 8: optionally add deterministic parallel MCCFR batches
 
@@ -2150,9 +2146,9 @@ algorithm.
   current-strategy table, action mask, sampled workspace, dictionary, or
   traversal-local collection was added.
 - Deviation: state/metadata contract checks remain active in Release rather
-  than being compiled out. Their benchmarked cost still clears the throughput
-  gate by a wide margin, and retaining explicit failures is simpler and safer;
-  Stage 7 may reconsider only if profiling shows a material win.
+  than being compiled out. Stage 7 measured a separate unchecked traversal and
+  found it 1.7% to 6.2% slower, so retaining explicit failures is both simpler
+  and the measured production choice.
 
 ### 2026-07-12 — Benchmark environment qualification
 
@@ -2390,3 +2386,60 @@ algorithm.
   for the exhaustive workspace, and 6,332 bytes for the sampled workspace
   after its log grew from 20 to a reusable 160 entries. Total exact payload was
   41,240 bytes for exhaustive and 32,248 bytes for sampled modes.
+
+### 2026-07-14 - Stage 7: profile-guided scalar completion
+
+- Reran the Release action/depth matrix, scalar row profile, four public-mode
+  fixture, memory calculation, and allocation checks. Added a compact
+  `--stage7-sample <mode> <actions> <depth> <iterations>` benchmark operation
+  that warms the opaque production solver, then reports elapsed time,
+  allocation, and exact nonterminal node visits for one controlled workload.
+- Inspected generated code and measured explicit two-/three-action regret and
+  average kernels, Span row access, a reciprocal-based generic scalar loop, an
+  isolated `Vector<double>` regret apply/clip/clear kernel, and a separate
+  trusted two-player CFR recursion. Candidate order alternated across seven
+  repetitions and reports include medians and min--max variance under the
+  known approximately 65%-throttled, greater-than-50%-loaded machine.
+- Retained no production specialization. Small-action dispatch regressed one
+  common workload by 21.5%; Span expanded the JIT body; the reciprocal loop
+  regressed by up to 12.3%; SIMD won its isolated kernel by 69.8% to 87.7% but
+  improved end-to-end time by at most 7.5% and sometimes regressed; removing
+  contract checks was 1.7% to 6.2% slower. Every candidate therefore failed
+  the $10\%$ improvement / $3\%$ common-workload gate and was removed.
+- Preserved the checked scalar equations, `double` representation, public API,
+  table layout, and memory footprint exactly as Stage 6. This is the material
+  deviation from the optimistic milestone summary, which anticipated retained
+  small-action or SIMD kernels: the plan explicitly allowed a benchmarked
+  scalar completion when end-to-end evidence did not support specialization.
+- Built the complete Release solution for `net5.0`, `netstandard2.1`, and both
+  .NET 8 executables with zero warnings; all 77 tests passed. All four public
+  modes remained zero-allocation after warm-up. Exact fixture totals remain
+  41,240 bytes for exhaustive and 32,248 bytes for sampled solvers. Appended
+  the complete Stage 7 environment, workload, JIT, variance, allocation,
+  memory, and no-go results to
+  [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).
+
+### 2026-07-15 - Stage 7 addendum: SIMD confirmation
+
+- Reopened the rejected `Vector<double>` candidate because its first end-to-end
+  run had shown 7.5% and 7.1% improvements at 8 and 32 actions. Lowered the
+  practical affected-workload gate from 10% to 5% for this confirmation while
+  continuing to require a repeatable result and no meaningful regression.
+- Implemented only fused regret addition, CFR+ clipping, and delta clearing for
+  clipped rows with at least eight actions. The original scalar loop remained
+  both the signed-mode path and vector tail; no traversal, table, workspace,
+  public API, or memory representation changed.
+- Compared the preserved scalar executable with the candidate using 11
+  alternating long-running pairs and then five drift-correcting ABBA blocks at
+  8, 16, and 32 actions. The ABBA median paired changes were -0.18%, -3.18%, and
+  +0.59%, respectively. Expected load variance remained large on the
+  approximately 65%-throttled machine, but no threshold produced the required
+  repeatable 5% end-to-end improvement.
+- Before rejection, a randomized scalar-reference test covered the SIMD
+  threshold, non-vector-width tails, nonzero offsets, large finite values,
+  exact delta clearing, and untouched sentinels; all 78 tests passed and the
+  candidate allocated zero bytes. The candidate and its temporary test were
+  then removed, leaving `CFRCore.fs` and the 77-test production suite identical
+  to the Stage 6 source. Complete raw pairs, ABBA blocks, node counts, runtime
+  qualification, and the decision are appended to
+  [`CFR_BENCHMARK_RESULTS.md`](CFR_BENCHMARK_RESULTS.md).

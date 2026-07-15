@@ -482,3 +482,336 @@ All 77 tests passed. Separate public-path allocation checks ran 10,000 warmed
 iterations of CFR, CFR+, MCCFR, and MCCFR+ and measured zero bytes for every
 mode. Existing exhaustive, sampled, and three-player allocation checks also
 remained zero.
+
+### Stage 7 - profile-guided single-thread optimization
+
+- Source revision: `99db8fd` plus the Stage 7 benchmark harness and
+  documentation working tree
+- Production qualification: `EvolutionaryBayes/CFRCore.fs` is unchanged from
+  `99db8fd`; every candidate below failed the merge gate and was removed
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+- Seed: `1729`
+
+The machine remained approximately 65% CPU/power throttled and normally above
+50% background CPU load. Thermal state was unavailable. Absolute timings are
+provisional. Candidate comparisons alternate order and report seven-run
+medians and observed min--max ranges. `COMPlus_TieredCompilation=0` was used
+for the generic-loop, SIMD, and validation experiments so tier promotion could
+not differ between variants. The small-action experiment used the ordinary
+tiered runtime. Allocation counts, exact node counts, generated-code evidence,
+and retained-memory calculations are more reliable than small timing changes.
+
+#### Final Release snapshot
+
+The Stage 1 action/depth matrix was rerun unchanged. It remains a legacy
+dictionary/string baseline, retained to preserve the original longitudinal
+workload. These are one-run snapshots rather than candidate comparisons.
+
+| Traversal | Actions | Depth | Iterations | Nodes | Elapsed ms | Nodes/s | Allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| exhaustive | 2 | 2 | 5,000 | 35,000 | 40.318 | 868,092 | 4,160,576 |
+| sampled | 2 | 2 | 10,000 | 50,000 | 172.959 | 289,086 | 16,720,544 |
+| exhaustive | 3 | 2 | 2,222 | 28,886 | 30.471 | 947,986 | 3,094,056 |
+| sampled | 3 | 2 | 4,444 | 31,108 | 103.839 | 299,578 | 11,910,920 |
+| exhaustive | 4 | 2 | 1,250 | 26,250 | 28.545 | 919,591 | 2,641,272 |
+| sampled | 4 | 2 | 2,500 | 22,500 | 52.958 | 424,864 | 8,981,176 |
+| exhaustive | 8 | 2 | 312 | 22,776 | 10.603 | 2,148,092 | 2,059,784 |
+| sampled | 8 | 2 | 624 | 10,608 | 30.498 | 347,825 | 5,279,400 |
+| exhaustive | 16 | 2 | 78 | 21,294 | 6.918 | 3,078,057 | 1,830,632 |
+| sampled | 16 | 2 | 156 | 5,148 | 7.430 | 692,895 | 3,573,488 |
+| exhaustive | 32 | 2 | 19 | 20,083 | 4.163 | 4,824,281 | 1,697,912 |
+| sampled | 32 | 2 | 38 | 2,470 | 6.982 | 353,757 | 2,710,240 |
+| exhaustive | 2 | 3 | 2,500 | 37,500 | 12.509 | 2,997,889 | 4,961,336 |
+| sampled | 2 | 3 | 5,000 | 45,000 | 40.414 | 1,113,481 | 13,241,336 |
+| exhaustive | 3 | 3 | 740 | 29,600 | 9.012 | 3,284,582 | 3,448,344 |
+| sampled | 3 | 3 | 1,480 | 23,680 | 17.635 | 1,342,769 | 6,420,280 |
+| exhaustive | 4 | 3 | 312 | 26,520 | 7.078 | 3,746,874 | 2,861,000 |
+| sampled | 4 | 3 | 624 | 15,600 | 11.234 | 1,388,654 | 3,824,520 |
+| exhaustive | 8 | 3 | 39 | 22,815 | 5.415 | 4,213,608 | 2,165,880 |
+| sampled | 8 | 3 | 78 | 6,318 | 4.159 | 1,519,006 | 1,275,496 |
+| exhaustive | 16 | 3 | 4 | 17,476 | 3.639 | 4,802,418 | 1,653,904 |
+| sampled | 16 | 3 | 8 | 2,312 | 0.908 | 2,547,097 | 442,424 |
+| exhaustive | 32 | 3 | 1 | 33,825 | 10.209 | 3,313,123 | 3,669,632 |
+| sampled | 32 | 3 | 2 | 2,178 | 1.692 | 1,287,082 | 399,552 |
+
+The final four-action, depth-five production snapshot used 500 measured
+iterations after 100 warm-up iterations and seven-run medians. Node visits
+count nonterminal actor queries.
+
+| Mode | Node visits | Median elapsed ms | Median nodes/s | Median allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| CFR | 170,500 | 85.468 | 1,994,910 | 0 |
+| CFR+ | 341,000 | 95.573 | 3,567,972 | 0 |
+| MCCFR | 33,500 | 10.545 | 3,176,741 | 0 |
+| MCCFR+ | 33,500 | 12.860 | 2,604,956 | 0 |
+
+The scalar row-cycle profile runs regret matching, average accumulation,
+clipped regret application, and average normalization. It shows that rows are
+real work but does not by itself justify changing an end-to-end traversal.
+
+| Actions | Iterations | Elapsed ms | Row cycles/s | Logical slots/s | Allocated bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 20,000,000 | 1,504.679 | 13,291,874 | 53,167,497 | 0 |
+| 2 | 10,000,000 | 981.792 | 10,185,458 | 81,483,663 | 0 |
+| 3 | 6,666,666 | 770.346 | 8,654,120 | 103,849,442 | 0 |
+| 4 | 5,000,000 | 729.828 | 6,850,930 | 109,614,883 | 0 |
+| 8 | 2,500,000 | 623.415 | 4,010,168 | 128,325,372 | 0 |
+| 16 | 1,250,000 | 635.851 | 1,965,869 | 125,815,619 | 0 |
+| 32 | 625,000 | 614.658 | 1,016,825 | 130,153,615 | 0 |
+
+#### Generated-code and candidate results
+
+The baseline `regretMatchUnchecked` JIT body was 302 bytes and contained range
+checks in both loops. Explicit two- and three-action kernels did not simplify
+the generated code: the two-action body was 300 bytes, the corrected
+three-action body was 333 bytes, and the action-count dispatcher was another
+87 bytes. Using F# generic `max` had initially expanded the three-action body
+to 597 bytes. A Span-based bounds-check experiment retained element checks and
+expanded the generic body to 382 bytes. Both forms were removed.
+
+The corrected small-action candidate also specialized average accumulation.
+Negative change is faster; every row allocated zero bytes. The candidate did
+not clear the 10% affected-workload gate consistently and regressed one common
+three-action workload by 21.5%.
+
+| Mode | Actions/depth | Nodes | Baseline median (range) ms | Candidate median (range) ms | Change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CFR | 2 / 8 | 1,275,000 | 390.154 (248.875--539.533) | 396.660 (278.069--505.929) | +1.7% |
+| CFR+ | 2 / 8 | 1,275,000 | 207.215 (159.937--524.125) | 198.787 (136.381--355.310) | -4.1% |
+| CFR | 3 / 6 | 728,000 | 335.621 (257.535--459.096) | 297.366 (241.856--387.422) | -11.4% |
+| CFR+ | 3 / 6 | 728,000 | 137.510 (123.555--268.258) | 167.007 (138.474--232.538) | +21.5% |
+
+A generic-loop candidate computed the reciprocal of the scaled regret total
+once, replacing one division per positive action with multiplication. It was
+mathematically stable but failed the end-to-end gate and was removed. Both
+variants allocated zero bytes.
+
+| Mode | Actions/depth | Nodes | Baseline median (range) ms | Candidate median (range) ms | Change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CFR | 2 / 8 | 1,275,000 | 396.963 (374.927--522.124) | 445.947 (369.409--493.496) | +12.3% |
+| CFR+ | 2 / 8 | 1,275,000 | 353.190 (312.903--437.383) | 372.806 (313.536--425.698) | +5.6% |
+| CFR | 3 / 6 | 728,000 | 342.339 (253.649--460.593) | 325.511 (281.313--391.205) | -4.9% |
+| CFR+ | 3 / 6 | 728,000 | 172.845 (153.624--212.195) | 175.626 (162.028--230.121) | +1.6% |
+
+An AVX `Vector<double>` apply/clip/clear kernel used four doubles per vector on
+this processor. The isolated boundary microbenchmark processed 4,096 rows and
+included restoring deltas for the next cycle. It showed a real kernel-level
+win and zero allocation, so it advanced to end-to-end testing.
+
+| Actions | Cycles | Scalar median (range) ms | SIMD median (range) ms | Change |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 1,200 | 1,791.141 (1,607.123--2,045.238) | 220.527 (184.609--276.867) | -87.7% |
+| 8 | 600 | 1,037.976 (897.891--1,102.797) | 174.409 (152.612--180.250) | -83.2% |
+| 16 | 300 | 775.972 (678.359--803.611) | 162.818 (117.091--253.679) | -79.0% |
+| 32 | 150 | 443.797 (369.509--651.942) | 134.058 (121.833--181.713) | -69.8% |
+
+The same SIMD kernel was then selected only for rows of at least two vectors.
+It did not clear the end-to-end gate and was removed; isolated kernel speed did
+not dominate recursive game and regret-matching work.
+
+| Mode | Actions/depth | Nodes | Scalar median (range) ms | SIMD median (range) ms | Change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CFR | 8 / 3 | 730,000 | 817.593 (669.992--921.481) | 838.238 (745.133--978.531) | +2.5% |
+| CFR+ | 8 / 3 | 730,000 | 463.462 (364.486--705.479) | 428.652 (353.833--542.330) | -7.5% |
+| CFR+ | 16 / 2 | 1,360,000 | 1,785.752 (1,656.903--2,066.782) | 1,788.351 (1,699.937--2,003.877) | +0.1% |
+| CFR+ | 32 / 2 | 1,320,000 | 3,688.651 (3,347.326--4,357.546) | 3,425.591 (3,207.712--3,716.455) | -7.1% |
+
+Finally, a temporary duplicate two-player CFR traversal removed the hot-path
+depth, action-count, actor, information-set, metadata, probability, and
+normalization checks without adding a per-node mode branch. The trusted path
+was slower in every paired median, so both it and the proposed public trusted
+mode were removed. The equal 40-byte readings are a benchmark-call artifact,
+not steady-state solver allocation.
+
+| Actions/depth | Nodes | Checked median (range) ms | Trusted median (range) ms | Change | Allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2 / 8 | 1,275,000 | 472.457 (334.658--509.244) | 481.202 (394.898--723.558) | +1.9% | 40 / 40 |
+| 3 / 6 | 1,456,000 | 750.260 (665.123--838.422) | 763.122 (640.977--883.906) | +1.7% | 40 / 40 |
+| 4 / 5 | 1,705,000 | 1,040.746 (953.580--1,188.890) | 1,104.863 (913.092--1,172.869) | +6.2% | 40 / 40 |
+
+#### Exit result
+
+No specialization was retained. The production scalar source, persistent
+tables, and workspaces are unchanged: exact payload remains 21,824 bytes for
+regrets plus strategy sums, 4,092 bytes for metadata, 15,324 bytes for the
+exhaustive workspace, and 6,332 bytes for the warmed sampled workspace on the
+341-information-set fixture. Totals remain 41,240 and 32,248 bytes. All four
+production modes measured zero steady-state allocation, the complete Release
+solution built with zero warnings, and all 77 tests passed. The benchmark
+executable retains only a compact `--stage7-sample` command for future
+one-shot production profiling; experimental candidate implementations were
+removed.
+
+## 2026-07-15
+
+### Stage 7 addendum - clipped-row SIMD confirmation
+
+- Source revision: `99db8fd` plus the uncommitted Stage 7 harness and
+  documentation working tree
+- Compared builds: a preserved scalar Release build and a temporary build with
+  only the clipped fused apply/clear SIMD candidate
+- Final production qualification: `EvolutionaryBayes/CFRCore.fs` and its tests
+  were restored byte-for-byte to `99db8fd` after the candidate failed the gate
+- Build configuration: `Release`
+- Runtime: `.NET 8.0.23`, with `COMPlus_TieredCompilation=0`
+- OS: `Microsoft Windows 10.0.19045`
+- Processor: `Intel64 Family 6 Model 158 Stepping 10, GenuineIntel`
+- Logical processors: `12`
+- Seed: `1729`
+
+This run reconsiders the earlier SIMD no-go because the first Stage 7 run had
+shown 7.5% and 7.1% end-to-end improvements at 8 and 32 actions. For this
+confirmation, a repeatable $5\%$ affected-workload improvement was sufficient.
+The machine remained permanently about 65% CPU/power throttled, normally above
+50% CPU load, and subject to load spikes. Thermal state was unavailable.
+Absolute times remain provisional; the decision therefore uses paired ratios
+and a second drift-correcting ABBA experiment rather than selecting the best
+independent median.
+
+The temporary candidate used `Vector<double>` only in
+`applyRegretDeltaAndClearUnchecked` when the update was clipped and the row had
+at least eight actions. It fused regret addition, zero clipping, and delta
+clearing across four doubles per AVX vector, then used the unchanged scalar
+loop for the tail. Signed CFR, sampled modes, traversals, tables, workspaces,
+and public APIs were unchanged. The candidate introduced no persistent or
+workspace memory.
+
+Before timing, a randomized scalar-reference test ran 200 trials at each of 7,
+8, 9, 10, 15, 16, 17, 31, 32, and 33 actions. It covered the SIMD threshold,
+vector tails, nonzero source offsets, large finite values, exact delta clearing,
+and untouched sentinels. All 78 tests passed, including the existing warmed
+allocation suite, and the candidate measured zero steady-state allocation.
+
+#### Workloads and method
+
+Every benchmark process constructed the public opaque solver, ran 100 warm-up
+iterations, forced collection, then timed only the requested training budget.
+Exact nonterminal node visits and allocation were identical for scalar and SIMD:
+
+| Actions / depth | Iterations | Node visits per sample |
+| --- | ---: | ---: |
+| 8 / 3 | 20,000 | 2,920,000 |
+| 16 / 2 | 40,000 | 1,360,000 |
+| 32 / 2 | 20,000 | 1,320,000 |
+
+A 730,000-node smoke pair at 8 actions measured 528.244 ms scalar and 504.626
+ms SIMD, a 4.5% candidate improvement. The longer experiment first ran 11
+adjacent scalar/SIMD pairs, reversing order on every pair. It then ran five
+ABBA blocks, alternating `scalar, SIMD, SIMD, scalar` with the reverse order and
+averaging both placements of each build inside the block. Negative change below
+means the SIMD candidate was faster. Every timed sample allocated zero bytes.
+
+#### Eleven alternating pairs
+
+Eight actions, depth three:
+
+| Pair | Scalar ms | SIMD ms | Paired change |
+| ---: | ---: | ---: | ---: |
+| 1 | 2,130.411 | 2,069.116 | -2.88% |
+| 2 | 2,147.218 | 2,144.042 | -0.15% |
+| 3 | 2,237.387 | 2,070.808 | -7.45% |
+| 4 | 2,045.972 | 1,968.501 | -3.79% |
+| 5 | 2,039.661 | 2,197.112 | +7.72% |
+| 6 | 2,151.592 | 2,037.569 | -5.30% |
+| 7 | 1,945.194 | 1,961.887 | +0.86% |
+| 8 | 1,901.958 | 2,004.130 | +5.37% |
+| 9 | 1,860.297 | 1,767.008 | -5.01% |
+| 10 | 2,154.521 | 1,957.325 | -9.15% |
+| 11 | 1,971.620 | 2,242.971 | +13.76% |
+
+Sixteen actions, depth two:
+
+| Pair | Scalar ms | SIMD ms | Paired change |
+| ---: | ---: | ---: | ---: |
+| 1 | 1,788.530 | 1,838.724 | +2.81% |
+| 2 | 2,037.351 | 1,870.272 | -8.20% |
+| 3 | 2,124.424 | 1,875.419 | -11.72% |
+| 4 | 2,093.204 | 2,095.109 | +0.09% |
+| 5 | 1,870.186 | 1,760.861 | -5.85% |
+| 6 | 2,025.652 | 2,034.792 | +0.45% |
+| 7 | 1,849.034 | 1,994.324 | +7.86% |
+| 8 | 2,154.984 | 1,964.527 | -8.84% |
+| 9 | 2,115.145 | 1,872.022 | -11.49% |
+| 10 | 1,958.982 | 1,857.725 | -5.17% |
+| 11 | 1,869.780 | 1,625.610 | -13.06% |
+
+Thirty-two actions, depth two:
+
+| Pair | Scalar ms | SIMD ms | Paired change |
+| ---: | ---: | ---: | ---: |
+| 1 | 3,318.726 | 3,536.143 | +6.55% |
+| 2 | 3,218.321 | 3,440.093 | +6.89% |
+| 3 | 3,595.690 | 3,421.687 | -4.84% |
+| 4 | 4,075.092 | 3,349.639 | -17.80% |
+| 5 | 3,881.617 | 3,639.564 | -6.24% |
+| 6 | 3,456.148 | 3,476.406 | +0.59% |
+| 7 | 3,569.486 | 3,818.860 | +6.99% |
+| 8 | 3,350.036 | 3,359.447 | +0.28% |
+| 9 | 3,966.769 | 3,136.771 | -20.92% |
+| 10 | 3,381.884 | 3,442.520 | +1.79% |
+| 11 | 3,260.809 | 3,691.111 | +13.20% |
+
+| Actions | Scalar median (range) ms | SIMD median (range) ms | Median paired change |
+| ---: | ---: | ---: | ---: |
+| 8 | 2,130.411 (1,860.297--2,237.387) | 2,069.116 (1,767.008--2,242.971) | -0.15% |
+| 16 | 2,037.351 (1,788.530--2,154.984) | 1,875.419 (1,625.610--2,095.109) | -5.17% |
+| 32 | 3,569.486 (3,218.321--4,075.092) | 3,476.406 (3,136.771--3,818.860) | +1.79% |
+
+#### Drift-correcting ABBA blocks
+
+Eight actions, depth three:
+
+| Block | Scalar mean ms | SIMD mean ms | Paired change |
+| ---: | ---: | ---: | ---: |
+| 1 | 2,288.726 | 1,930.237 | -15.66% |
+| 2 | 2,324.649 | 2,320.460 | -0.18% |
+| 3 | 2,236.816 | 2,337.247 | +4.49% |
+| 4 | 2,151.762 | 2,038.885 | -5.25% |
+| 5 | 2,043.982 | 2,132.132 | +4.31% |
+
+Sixteen actions, depth two:
+
+| Block | Scalar mean ms | SIMD mean ms | Paired change |
+| ---: | ---: | ---: | ---: |
+| 1 | 1,872.666 | 1,779.108 | -5.00% |
+| 2 | 1,968.565 | 1,913.276 | -2.81% |
+| 3 | 1,998.362 | 1,934.835 | -3.18% |
+| 4 | 1,957.626 | 1,812.946 | -7.39% |
+| 5 | 1,937.839 | 2,062.809 | +6.45% |
+
+Thirty-two actions, depth two:
+
+| Block | Scalar mean ms | SIMD mean ms | Paired change |
+| ---: | ---: | ---: | ---: |
+| 1 | 3,488.956 | 3,435.506 | -1.53% |
+| 2 | 3,481.434 | 3,502.124 | +0.59% |
+| 3 | 3,549.581 | 3,640.056 | +2.55% |
+| 4 | 3,697.730 | 3,425.814 | -7.35% |
+| 5 | 3,646.548 | 4,070.627 | +11.63% |
+
+| Actions | Scalar block median ms | SIMD block median ms | Median paired change | Paired range |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 2,236.816 | 2,132.132 | -0.18% | -15.66%--+4.49% |
+| 16 | 1,957.626 | 1,913.276 | -3.18% | -7.39%--+6.45% |
+| 32 | 3,549.581 | 3,502.124 | +0.59% | -7.35%--+11.63% |
+
+#### Decision and final verification
+
+The longer adjacent pairs did not repeat the original 8- or 32-action wins.
+The ABBA experiment then failed the practical $5\%$ gate at every possible
+threshold: 8 actions was effectively neutral, 16 actions favored SIMD by only
+3.18%, and 32 actions was 0.59% slower. Large sign-changing ranges are expected
+on this throttled, loaded machine, but they do not justify selecting a favorable
+isolated result. The candidate and its temporary correctness test were removed.
+
+The final production `CFRCore.fs` and 77-test suite are identical to revision
+`99db8fd`. The complete Release solution rebuilt for `net5.0`,
+`netstandard2.1`, and both .NET 8 executables with zero warnings, and all 77
+tests passed. Persistent memory, workspace memory, and warmed allocation remain
+the Stage 7 scalar values: 41,240 bytes total for the exhaustive fixture,
+32,248 bytes for the sampled fixture, and zero steady-state allocation in all
+four public modes.
